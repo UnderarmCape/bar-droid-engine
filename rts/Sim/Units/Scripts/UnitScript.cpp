@@ -226,7 +226,34 @@ void CUnitScript::TickAllAnims(int deltaTime)
 	}
 
 	spring::VectorEraseIfAll(anims, [](const auto& ai) { return ai.done; });
-#if 1
+#if defined(BARDROID_SIM)
+	// BAR Droid (bardroid/sim): the pieces walked depth-first from a stack kept per thread (this runs on the worker
+	// threads), not breadth-first through a std::deque made for every animating unit every frame. A piece's transform
+	// comes from its parent's alone, so the order changes no result. (The DFS branch below needs C++23's explicit
+	// object parameters, which GCC 13, the official arm64 build's compiler, does not have.)
+	static thread_local std::vector<std::pair<LocalModelPiece*, Transform>> stack;
+	stack.clear();
+	stack.emplace_back(rootPiece, Transform{});
+
+	while (!stack.empty()) {
+		// copy
+		auto [lmp, pTra] = stack.back();
+		stack.pop_back();
+
+		if (lmp->GetDirty()) {
+			lmp->SetDirtyRaw(false);
+			lmp->SetWasUpdatedRaw(true);
+			lmp->UpdatePieceSpaceTransform();
+			lmp->UpdateModelSpaceTransform(pTra);
+		}
+
+		const Transform& modelTra = lmp->GetModelSpaceTransformRaw();
+
+		for (auto* child : lmp->children) {
+			stack.emplace_back(child, modelTra);
+		}
+	}
+#elif 1
 	// BFS pass
 	std::deque<std::pair<LocalModelPiece*, Transform>> q;
 	q.push_front({ rootPiece, Transform{} });

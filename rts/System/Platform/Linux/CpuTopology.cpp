@@ -332,11 +332,46 @@ std::vector<int> get_arm_cache_shared_cpus(int cpu, int index) {
 	return shared_cpus;
 }
 
+#if defined(BARDROID_SIM)
+// BAR Droid (bardroid/sim): Android kernels list each core's caches without their sizes, so the cache-based detection
+// below finds nothing: every core counted as a performance core (the little ones too) and no cache group, and the
+// thread pool fell back to a default count (main + 3 workers on an 8-core phone). The kernel's cpu_capacity (the
+// scheduler's relative speed of each core, 1024 for the fastest) tells the core types apart instead.
+uint32_t get_arm_cpu_capacity(int cpu) {
+	std::ifstream file("/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/cpu_capacity");
+	uint32_t capacity = 0;
+	if (file)
+		file >> capacity;
+	return capacity;
+}
+
+// The slowest cores (the lowest capacity, when not all are equal) are efficiency cores, the rest performance cores
+bool detect_arm_core_types_by_capacity(std::bitset<MAX_CPUS> &eff_mask, std::bitset<MAX_CPUS> &perf_mask) {
+	const int num_cpus = get_cpu_count();
+	uint32_t lo = UINT32_MAX, hi = 0;
+	for (int cpu = 0; cpu < num_cpus && cpu < MAX_CPUS; ++cpu) {
+		const uint32_t c = get_arm_cpu_capacity(cpu);
+		if (c == 0)
+			return false;
+		lo = std::min(lo, c);
+		hi = std::max(hi, c);
+	}
+	for (int cpu = 0; cpu < num_cpus && cpu < MAX_CPUS; ++cpu) {
+		if (lo < hi && get_arm_cpu_capacity(cpu) == lo)
+			eff_mask.set(cpu);
+		else
+			perf_mask.set(cpu);
+	}
+	LOG("[CpuTopology] ARM core types by cpu_capacity: performance 0x%08lx, efficiency 0x%08lx", perf_mask.to_ulong(), eff_mask.to_ulong());
+	return true;
+}
+#endif
+
 // Detect ARM core types based on cache sizes
 void detect_arm_core_types(std::bitset<MAX_CPUS> &eff_mask, std::bitset<MAX_CPUS> &perf_mask) {
 	int num_cpus = get_cpu_count();
 	std::vector<std::pair<int, uint32_t>> cpu_cache_sizes;
-	
+
 	// First, determine the highest cache level and collect sizes
 	int highest_cache_index = -1;
 	for (int cpu = 0; cpu < num_cpus && cpu < MAX_CPUS; ++cpu) {
@@ -345,7 +380,11 @@ void detect_arm_core_types(std::bitset<MAX_CPUS> &eff_mask, std::bitset<MAX_CPUS
 			highest_cache_index = cache_index;
 		}
 	}
-	
+
+#if defined(BARDROID_SIM)
+	if (highest_cache_index == -1 && detect_arm_core_types_by_capacity(eff_mask, perf_mask))
+		return;
+#endif
 	if (highest_cache_index == -1) {
 		// No L2 or L3 cache found, all cores are performance cores
 		for (int cpu = 0; cpu < num_cpus && cpu < MAX_CPUS; ++cpu) {
@@ -473,6 +512,33 @@ ProcessorCaches GetProcessorCache() {
 	}
 	
 	if (highest_cache_index == -1) {
+#if defined(BARDROID_SIM)
+		// BAR Droid (bardroid/sim): no cache sizes (Android): the cores grouped by cpu_capacity instead, the fastest
+		// group first as the largest cache group would be (its capacity stands in for the group's cache size)
+		std::vector<std::pair<uint32_t, uint32_t>> groups; // capacity, cpu mask
+		for (int cpu = 0; cpu < num_cpus && cpu < MAX_CPUS; ++cpu) {
+			const uint32_t c = get_arm_cpu_capacity(cpu);
+			if (c == 0) {
+				groups.clear();
+				break;
+			}
+			auto it = std::ranges::find_if(groups, [c](const auto& g) { return g.first == c; });
+			if (it == groups.end())
+				groups.emplace_back(c, 0x1u << cpu);
+			else
+				it->second |= (0x1u << cpu);
+		}
+		if (!groups.empty()) {
+			std::ranges::sort(groups, [](const auto& a, const auto& b) { return a.first > b.first; });
+			for (const auto& [capacity, mask] : groups) {
+				processorCaches.groupCaches.push_back({});
+				processorCaches.groupCaches.back().groupMask = mask;
+				processorCaches.groupCaches.back().cacheSizes[2] = capacity;
+				LOG("[CpuTopology] ARM core group by cpu_capacity %u: 0x%08x", capacity, mask);
+			}
+			return processorCaches;
+		}
+#endif
 		LOG_L(L_WARNING, "No L2 or L3 cache found on ARM system");
 		return processorCaches;
 	}
