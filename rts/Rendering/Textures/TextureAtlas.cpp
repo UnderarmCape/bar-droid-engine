@@ -128,6 +128,11 @@ size_t CTextureAtlas::AddTexFromFile(std::string texName, const std::string& fil
 	if (bitmap.channels != 4 || bitmap.compressed)
 		throw content_error("Unsupported bitmap format in file " + file);
 
+#if defined(BARDROID_SIM)
+	if (downscale > 1 && bitmap.xsize >= 64 && bitmap.ysize >= 64)
+		bitmap = bitmap.CreateRescaled(bitmap.xsize / downscale, bitmap.ysize / downscale);
+#endif
+
 	return (files[lcFile] = AddTexFromMem(std::move(texName), bitmap.xsize, bitmap.ysize, RGBA32, bitmap.GetRawMem()));
 }
 

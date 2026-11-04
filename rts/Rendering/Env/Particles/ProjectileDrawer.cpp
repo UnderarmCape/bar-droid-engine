@@ -45,6 +45,9 @@
 #include "System/Misc/TracyDefs.h"
 
 CONFIG(int, SoftParticles).defaultValue(1).safemodeValue(0).description("Soften up CEG particles on clipping edges");
+#if defined(BARDROID_SIM)
+CONFIG(int, ProjectileAtlasDownscale).defaultValue(1).minimumValue(1).maximumValue(4).description("BAR Droid: shrink the projectile and ground effect textures by this factor on each side (graphics memory on phones)");
+#endif
 
 static uint32_t sortCamType = 0;
 static bool CProjectileDrawOrderSortingPredicate(const CProjectile* p1, const CProjectile* p2) noexcept {
@@ -94,6 +97,11 @@ void CProjectileDrawer::Init() {
 
 	textureAtlas  = new CTextureAtlas(CTextureAtlas::ATLAS_ALLOC_MP_LEGACY, 0, 0, "ExplosFXAtlas", true);
 	groundFXAtlas = new CTextureAtlas(CTextureAtlas::ATLAS_ALLOC_MP_LEGACY, 0, 0, "GroundFXAtlas", true);
+#if defined(BARDROID_SIM)
+	textureAtlas->downscale = groundFXAtlas->downscale = configHandler->GetInt("ProjectileAtlasDownscale");
+	if (textureAtlas->downscale > 1)
+		LOG("[ProjectileDrawer] BAR Droid: projectile and ground effect textures shrunk %dx on each side", textureAtlas->downscale);
+#endif
 
 	LuaParser resourcesParser("gamedata/resources.lua", SPRING_VFS_MOD_BASE, SPRING_VFS_ZIP);
 	LuaParser mapResParser("gamedata/resources_map.lua", SPRING_VFS_MAP_BASE, SPRING_VFS_ZIP);
