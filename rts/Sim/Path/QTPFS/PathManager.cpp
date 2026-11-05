@@ -183,6 +183,7 @@ QTPFS::PathManager::PathManager() {
 	systemEntity = registry.create();
 
 	CTimeProfiler::RegisterTimer("Sim::Path::Requests");
+	CTimeProfiler::RegisterTimer("Sim::Path::RawSearches"); // (its worker timer is not registered by SCOPED_MT_TIMER)
 
 	assert(entt::to_entity(systemEntity) == 0);
 }
