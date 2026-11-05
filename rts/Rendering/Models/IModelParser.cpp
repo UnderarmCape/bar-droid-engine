@@ -37,6 +37,70 @@
 
 #include "System/Misc/TracyDefs.h"
 
+#if defined(BARDROID_SIM) && !defined(HEADLESS)
+#include <algorithm>
+#include <atomic>
+#include "System/Config/ConfigHandler.h"
+#include "lib/meshoptimizer/meshoptimizer.h"
+
+// BAR Droid (engine branch): models drawn with fewer triangles, for phones. Each piece's triangles are simplified once,
+// when its model loads (meshoptimizer's edge collapses; seams and open edges keep their shape), down to the given share
+// of its triangles as long as no point of the surface moves more than the given distance. Only the index list changes:
+// the vertices, and with them every size, bound and collision volume taken from the model, stay exactly the same, so the
+// simulation does not notice (online-safe). Every drawing pass (units, features, shadows, build previews, wreck pieces)
+// uses the shorter list.
+CONFIG(float, BarDroidModelSimplify).defaultValue(0.0f).minimumValue(0.0f).maximumValue(1.0f)
+	.description("BAR Droid: each model piece simplified at load to at most this share of its triangles (0: off)");
+CONFIG(float, BarDroidModelSimplifyError).defaultValue(1.0f).minimumValue(0.0f).maximumValue(100.0f)
+	.description("BAR Droid: the farthest a simplified model's surface may move, in elmos");
+
+namespace {
+	std::atomic<uint64_t> barDroidTrisBefore{0};
+	std::atomic<uint64_t> barDroidTrisAfter{0};
+	std::atomic<uint32_t> barDroidModels{0};
+
+	void BarDroidSimplifyModel(S3DModel* model)
+	{
+		static const float share = configHandler->GetFloat("BarDroidModelSimplify");
+		static const float maxError = configHandler->GetFloat("BarDroidModelSimplifyError");
+		if (share <= 0.0f || share >= 1.0f)
+			return;
+
+		uint64_t before = 0;
+		uint64_t after = 0;
+		std::vector<uint32_t> out;
+		for (S3DModelPiece* p : model->pieceObjects) {
+			std::vector<uint32_t>& indices = p->GetIndicesVec();
+			const std::vector<SVertexData>& vertices = p->GetVerticesVec();
+			before += indices.size() / 3;
+			// (small pieces keep theirs: little to gain, and their shapes are details)
+			// (and a piece with an index past its vertices, which the simplifier would read out of bounds)
+			if (indices.size() < 3 * 48 || indices.size() % 3 != 0 || vertices.empty()
+				|| *std::max_element(indices.begin(), indices.end()) >= vertices.size()) {
+				after += indices.size() / 3;
+				continue;
+			}
+			const size_t target = std::max<size_t>(3 * 16, static_cast<size_t>(indices.size() / 3 * share) * 3);
+			out.resize(indices.size());
+			const size_t n = meshopt_simplify(out.data(), indices.data(), indices.size(), &vertices[0].pos.x, vertices.size(),
+				sizeof(SVertexData), target, maxError, meshopt_SimplifyErrorAbsolute, nullptr);
+			if (n >= 3 && n < indices.size()) {
+				out.resize(n);
+				meshopt_optimizeVertexCache(out.data(), out.data(), n, vertices.size());
+				indices.swap(out);
+			}
+			after += indices.size() / 3;
+		}
+		const uint64_t allBefore = (barDroidTrisBefore += before);
+		const uint64_t allAfter = (barDroidTrisAfter += after);
+		const uint32_t models = ++barDroidModels;
+		if (models % 50 == 1)
+			LOG("[BarDroid] models simplified (share %.2f, %.1f elmos): %u models, %llu -> %llu triangles", share, maxError,
+				models, static_cast<unsigned long long>(allBefore), static_cast<unsigned long long>(allAfter));
+	}
+}
+#endif
+
 
 CModelLoader modelLoader;
 
@@ -445,8 +509,13 @@ void CModelLoader::PostProcessGeometry(S3DModel* model)
 
 	// does quads and strips conversion sometimes. Need to run first
 	for (size_t i = 0; i < model->pieceObjects.size(); ++i) {
-		auto* p = model->pieceObjects[i];
-		p->PostProcessGeometry(static_cast<uint32_t>(i));
+		model->pieceObjects[i]->PostProcessGeometry(static_cast<uint32_t>(i));
+	}
+#if defined(BARDROID_SIM) && !defined(HEADLESS)
+	// (after the conversion to triangles, before the wreck pieces are cut from them)
+	BarDroidSimplifyModel(model);
+#endif
+	for (auto* p : model->pieceObjects) {
 		p->CreateShatterPieces();
 	}
 	{

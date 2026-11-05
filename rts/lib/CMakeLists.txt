@@ -160,6 +160,7 @@ ADD_SUBDIRECTORY(fastgltf)
 
 ADD_SUBDIRECTORY(squish)
 ADD_SUBDIRECTORY(rg-etc1)
+ADD_SUBDIRECTORY(meshoptimizer)
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 	# Benign clang-only warnings in vendored rg_etc1.cpp (no-op labs() on unsigned +
 	# bare mark-as-used statements).
