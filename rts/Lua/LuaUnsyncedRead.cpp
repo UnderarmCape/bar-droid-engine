@@ -615,6 +615,10 @@ int LuaUnsyncedRead::GetMenuName(lua_State* L)
 int LuaUnsyncedRead::GetProfilerTimeRecord(lua_State* L)
 {
 	const CTimeProfiler::TimeRecord& record = CTimeProfiler::GetInstance().GetTimeRecord(lua_tostring(L, 1));
+	// (BAR Droid engine branch: the optional argument is read before the results are pushed, which took its stack slot,
+	// so every call failed with "bad argument #2 ... (boolean expected, got number)"; and the frame table is made before
+	// it is filled)
+	const bool frameData = luaL_optboolean(L, 2, false);
 
 	int numRet = 5;
 	lua_pushnumber(L, record.total.toMilliSecsf());
@@ -623,7 +627,8 @@ int LuaUnsyncedRead::GetProfilerTimeRecord(lua_State* L)
 	lua_pushnumber(L, record.stats.y); // time-%
 	lua_pushnumber(L, record.stats.z); // peak-%
 
-	if (luaL_optboolean(L, 2, false)) {
+	if (frameData) {
+		lua_createtable(L, record.frames.size(), 0);
 		for (size_t i = 0; i < record.frames.size(); i++) {
 			lua_pushnumber(L, i + 1); // key
 			lua_pushnumber(L, record.frames[i].toMilliSecsf()); // val
