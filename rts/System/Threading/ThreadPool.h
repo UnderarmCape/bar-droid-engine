@@ -151,6 +151,22 @@ struct MultithreadedSection {
 };
 
 
+#if defined(BARDROID_SIM) && defined(__linux__)
+// BAR Droid (engine branch): a thread waiting for a task group (WaitForFinished) spun on the clock until the group was
+// done, up to 500 ms: on a phone the main thread waited out the workers at full power on its fastest core, ~7 % of its
+// time reading the clock in a late 8v8 replay (simpleperf). With BARDROID_POOL_SLEEP it spins briefly, then sleeps on the
+// group's task counter (a futex) until the thread that finishes the group's last task wakes it. Which thread computes
+// what is unchanged: scheduling only, no result changes.
+#include <climits>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#define BARDROID_POOL_SLEEP 1
+#endif
+
 class ITaskGroup
 {
 public:
@@ -173,6 +189,13 @@ public:
 		const spring_time t0 = spring_now();
 
 		while (ExecuteStep(tid));
+
+		#ifdef BARDROID_POOL_SLEEP
+		// (the group done: wake a thread sleeping on it in WaitForFinished; both sides seq_cst, so either this sees the
+		// sleeper or the sleeper sees the count at 0 and does not sleep)
+		if (sleepers.load() != 0 && remainingTasks.load() == 0)
+			syscall(SYS_futex, reinterpret_cast<int*>(&remainingTasks), FUTEX_WAKE_PRIVATE, INT_MAX, nullptr, nullptr, 0);
+		#endif
 
 		const spring_time t1 = spring_now();
 		const spring_time dt = t1 - t0;
@@ -231,6 +254,9 @@ public:
 
 	void ResetState(bool queued, bool pooled, bool inuse) {
 		remainingTasks.store(0);
+		#ifdef BARDROID_POOL_SLEEP
+		sleepers.store(0);
+		#endif
 		wantedThread.store(0);
 		taskPoolMask.store(((1 * pooled) << 0) + ((1 * inuse) << 1));
 
@@ -245,6 +271,9 @@ public:
 
 	std::atomic_bool inTaskQueue; // whether this task is still in a thread's queue
 	std::atomic_bool execLoopDone; // whether the thread running this task is about to exit ExecLoop
+	#ifdef BARDROID_POOL_SLEEP
+	std::atomic_int sleepers; // threads asleep on remainingTasks in WaitForFinished
+	#endif
 
 private:
 	static std::atomic_uint lastId;
