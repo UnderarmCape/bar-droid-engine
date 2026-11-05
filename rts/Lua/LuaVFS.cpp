@@ -18,7 +18,12 @@
 #include "System/Log/ILog.h"
 #include "System/StringUtil.h"
 #include "System/TimeProfiler.h"
+#include "System/Config/ConfigHandler.h"
 #include "../tools/pr-downloader/src/pr-downloader.h"
+#if defined(BARDROID_SIM)
+#include <algorithm>
+CONFIG(std::string, BarDroidUnsyncedGadgetsOff).defaultValue("").description("BAR Droid: gadget files (comma separated names, e.g. gfx_fire_smoke_gl4.lua) the unsynced LuaRules state does not load: drawing-only effects off; the synced game loads them as always");
+#endif
 #include "fmt/format.h"
 
 #include "System/Misc/TracyDefs.h"
@@ -529,6 +534,26 @@ int LuaVFS::DirList(lua_State* L, bool synced)
 	const std::string& modes = GetModes(L, 3, synced);
 	const bool recursive = luaL_optboolean(L, 4, false);
 
+#ifdef BARDROID_SIM
+	// BAR Droid (engine branch): gadget files named in BarDroidUnsyncedGadgetsOff (comma separated, e.g.
+	// "gfx_nano_particles_gl4.lua,gfx_fire_smoke_gl4.lua") are left out of the lists the *unsynced* LuaRules state gets,
+	// so their drawing-only halves never load. The synced state's lists are untouched (its own DirList), so the game's
+	// synced code and its results stay the same.
+	if (!synced && CLuaHandle::GetHandle(L) != nullptr && CLuaHandle::GetHandle(L)->GetName() == "LuaRules") {
+		static const std::string off = StringToLower(configHandler->GetString("BarDroidUnsyncedGadgetsOff"));
+		if (!off.empty()) {
+			std::vector<std::string> files = CFileHandler::DirList(dir, pattern, modes, recursive);
+			std::erase_if(files, [](const std::string& path) {
+				const std::string name = StringToLower(FileSystem::GetFilename(path));
+				const size_t at = off.find(name);
+				return !name.empty() && at != std::string::npos && (at == 0 || off[at - 1] == ',' || off[at - 1] == ' ')
+					&& (at + name.size() == off.size() || off[at + name.size()] == ',' || off[at + name.size()] == ' ');
+			});
+			LuaUtils::PushStringVector(L, files);
+			return 1;
+		}
+	}
+#endif
 	LuaUtils::PushStringVector(L, CFileHandler::DirList(dir, pattern, modes, recursive));
 	return 1;
 }
