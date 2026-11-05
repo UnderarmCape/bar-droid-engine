@@ -45,9 +45,7 @@ public:
 			GLint ready = 0;
 			glGetQueryObjectiv(e.queries[slot], GL_QUERY_RESULT_AVAILABLE, &ready);
 			if (ready) {
-				GLuint64 ns = 0;
-				glGetQueryObjectui64v(e.queries[slot], GL_QUERY_RESULT, &ns);
-				CTimeProfiler::GetInstance().AddTime(e.hash, spring_gettime(), spring_time::fromNanoSecs(int64_t(ns)), false, false, false);
+				AddResult(e, slot);
 			}
 		}
 		glBeginQuery(GL_TIME_ELAPSED, e.queries[slot]);
@@ -73,6 +71,16 @@ private:
 		GLuint queries[SLOTS] = {};
 		bool used[SLOTS] = {};
 	};
+	// a slot's result to the profiler; over a second is no GPU time but a query the driver never ran (a widget's pass
+	// in the minimap's drawing read ~5e8 s on the phone's Mesa), left out
+	static void AddResult(const Entry& e, uint32_t slot)
+	{
+		GLuint64 ns = 0;
+		glGetQueryObjectui64v(e.queries[slot], GL_QUERY_RESULT, &ns);
+		if (ns < GLuint64(1000000000))
+			CTimeProfiler::GetInstance().AddTime(e.hash, spring_gettime(), spring_time::fromNanoSecs(int64_t(ns)), false, false, false);
+	}
+
 	// (keyed by the pass name's pointer: the callers pass string literals; GL on the main thread only)
 	static std::unordered_map<const char*, Entry>& Entries()
 	{
@@ -107,9 +115,7 @@ public:
 			GLint ready = 0;
 			glGetQueryObjectiv(e.queries[slot], GL_QUERY_RESULT_AVAILABLE, &ready);
 			if (ready) {
-				GLuint64 ns = 0;
-				glGetQueryObjectui64v(e.queries[slot], GL_QUERY_RESULT, &ns);
-				CTimeProfiler::GetInstance().AddTime(e.hash, spring_gettime(), spring_time::fromNanoSecs(int64_t(ns)), false, false, false);
+				AddResult(e, slot);
 			}
 		}
 		glBeginQuery(GL_TIME_ELAPSED, e.queries[slot]);
