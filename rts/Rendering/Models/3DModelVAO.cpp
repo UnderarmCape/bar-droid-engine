@@ -168,7 +168,14 @@ void S3DModelVAO::UploadVBOs()
 	if (vertData.size() > vertUploadIndex) {
 		assert(!safeToDeleteVectors);
 		vertVBO.Bind();
+#if defined(BARDROID_SIM)
+		// BAR Droid: grown by half at least (models loaded as they are needed, PreloadModels = 0: in 8 MB steps every
+		// step made the whole buffer anew and copied it, ~1.9 GB of GPU memory in 8 s on a phone, 2026-11-04)
+		const size_t reqSize = std::max(AlignUp(std::max(vertData.size(), S3DModelVAO::VERT_SIZE0) * sizeof(SVertexData), MEM_STEP),
+			(vertVBO.GetSize() > 0 && vertData.size() * sizeof(SVertexData) > vertVBO.GetSize()) ? AlignUp(vertVBO.GetSize() * 3 / 2, MEM_STEP) : size_t(0));
+#else
 		const size_t reqSize = AlignUp(std::max(vertData.size(), S3DModelVAO::VERT_SIZE0) * sizeof(SVertexData), MEM_STEP);
+#endif
 		reinitVAO |= (reqSize > vertVBO.GetSize());
 		vertVBO.Resize(reqSize, GL_STATIC_DRAW); //noop if size hasn't changed, will copy data if changed
 		vertVBO.SetBufferSubData(vertUploadIndex * sizeof(SVertexData), (vertData.size() - vertUploadIndex) * sizeof(SVertexData), vertData.data() + vertUploadIndex);
@@ -180,7 +187,12 @@ void S3DModelVAO::UploadVBOs()
 	if (indxData.size() > indxUploadIndex) {
 		assert(!safeToDeleteVectors);
 		indxVBO.Bind();
+#if defined(BARDROID_SIM)
+		const size_t reqSize = std::max(AlignUp(std::max(indxData.size(), S3DModelVAO::INDX_SIZE0) * sizeof(   uint32_t), MEM_STEP),
+			(indxVBO.GetSize() > 0 && indxData.size() * sizeof(uint32_t) > indxVBO.GetSize()) ? AlignUp(indxVBO.GetSize() * 3 / 2, MEM_STEP) : size_t(0));
+#else
 		const size_t reqSize = AlignUp(std::max(indxData.size(), S3DModelVAO::INDX_SIZE0) * sizeof(   uint32_t), MEM_STEP);
+#endif
 		reinitVAO |= (reqSize > indxVBO.GetSize());
 		indxVBO.Resize(reqSize, GL_STATIC_DRAW); //noop if size hasn't changed, will copy data if changed
 		indxVBO.SetBufferSubData(indxUploadIndex * sizeof(   uint32_t), (indxData.size() - indxUploadIndex) * sizeof(   uint32_t), indxData.data() + indxUploadIndex);
