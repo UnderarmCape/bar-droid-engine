@@ -68,6 +68,9 @@
 #include <tracy/TracyLua.hpp>
 
 #include <algorithm>
+#include <deque>
+#include <map>
+#include <optional>
 #include <string>
 
 
@@ -141,6 +144,86 @@ static int handlepanic(lua_State* L)
 	throw content_error(luaL_optsstring(L, 1, "lua paniced"));
 }
 
+#if defined(BARDROID_SIM) && !defined(TRACY_ENABLE)
+// BAR Droid (engine branch): BAR's widget and gadget handlers mark each one's call with a Tracy zone
+// (tracy.ZoneBeginN("W:Update:<widget name>") ... tracy.ZoneEnd()), which are no-ops without Tracy. While the engine's
+// profiler is on ("/debug 1 0"; drawDebug goes with it) they become its timers: the time of every widget and gadget
+// per call-in, from the game's own marks. Lua runs on the main thread only, so one stack serves every handle.
+namespace {
+	struct BarDroidZone { unsigned hash; spring_time start; };
+	std::vector<BarDroidZone> barDroidZones;
+	spring::unordered_map<std::string, unsigned> barDroidZoneHashes;
+	std::deque<std::string> barDroidZoneNames; // (the profiler keeps the names)
+
+	int BarDroidZoneBeginN(lua_State* L)
+	{
+		if (barDroidZones.size() > 256)
+			barDroidZones.clear(); // (an error between a begin and its end: start over)
+
+		size_t len = 0;
+		const char* name = globalRendering->drawDebug ? lua_tolstring(L, 1, &len) : nullptr;
+
+		if (name == nullptr) {
+			barDroidZones.push_back({0, spring_notime});
+			return 0;
+		}
+
+		std::string key(name, len);
+		auto it = barDroidZoneHashes.find(key);
+
+		if (it == barDroidZoneHashes.end()) {
+			barDroidZoneNames.emplace_back(std::move(key));
+			CTimeProfiler::RegisterTimer(barDroidZoneNames.back().c_str());
+			it = barDroidZoneHashes.emplace(barDroidZoneNames.back(), hashString(barDroidZoneNames.back().c_str())).first;
+		}
+
+		barDroidZones.push_back({it->second, spring_gettime()});
+		return 0;
+	}
+
+	int BarDroidZoneEnd(lua_State* L)
+	{
+		if (barDroidZones.empty())
+			return 0;
+
+		const BarDroidZone zone = barDroidZones.back();
+		barDroidZones.pop_back();
+
+		if (zone.hash != 0 && globalRendering->drawDebug)
+			CTimeProfiler::GetInstance().AddTime(zone.hash, zone.start, spring_gettime() - zone.start, false, false, false);
+
+		return 0;
+	}
+
+	// (an unnamed zone: a mark that times nothing, so every ZoneEnd still closes its own begin)
+	int BarDroidZoneBegin(lua_State* L)
+	{
+		barDroidZones.push_back({0, spring_notime});
+		return 0;
+	}
+
+	void BarDroidRegisterZoneTimers(lua_State* L)
+	{
+		lua_getglobal(L, "tracy");
+		if (!lua_istable(L, -1)) {
+			lua_pop(L, 1);
+			return;
+		}
+		lua_pushcfunction(L, BarDroidZoneBegin);
+		lua_setfield(L, -2, "ZoneBegin");
+		lua_pushcfunction(L, BarDroidZoneBegin);
+		lua_setfield(L, -2, "ZoneBeginS");
+		lua_pushcfunction(L, BarDroidZoneBeginN);
+		lua_setfield(L, -2, "ZoneBeginNS");
+		lua_pushcfunction(L, BarDroidZoneBeginN);
+		lua_setfield(L, -2, "ZoneBeginN");
+		lua_pushcfunction(L, BarDroidZoneEnd);
+		lua_setfield(L, -2, "ZoneEnd");
+		lua_pop(L, 1);
+	}
+}
+#endif
+
 
 
 CLuaHandle::CLuaHandle(const string& _name, int _order, bool _userMode, bool _synced)
@@ -176,6 +259,9 @@ CLuaHandle::CLuaHandle(const string& _name, int _order, bool _userMode, bool _sy
 
 	// register tracy functions in global scope
 	tracy::LuaRegister(L);
+	#if defined(BARDROID_SIM) && !defined(TRACY_ENABLE)
+		BarDroidRegisterZoneTimers(L);
+	#endif
 	#ifdef TRACY_ENABLE
 		lua_getglobal(L, "tracy");
 		LuaTracyExtra::PushEntries(L);
@@ -483,6 +569,23 @@ int CLuaHandle::RunCallInTraceback(
 		int error;
 	};
 
+#ifdef BARDROID_SIM
+	// BAR Droid (engine branch): while the engine's profiler is on ("/debug 1 0"; drawDebug goes with it) a timer for
+	// each handle and call-in, "Lua::<handle>[::synced]::<call-in>": which call-ins a big game's Lua time goes to (the
+	// handler runs every widget or gadget of a call-in inside it). Lua runs on the main thread only.
+	std::optional<ScopedTimer> callinTimer;
+	if (hs != nullptr && globalRendering->drawDebug) {
+		static std::map<std::pair<const CLuaHandle*, const LuaHashString*>, unsigned> callinHashes;
+		static std::deque<std::string> callinNames; // (the profiler keeps the names)
+		auto it = callinHashes.find({this, hs});
+		if (it == callinHashes.end()) {
+			callinNames.emplace_back("Lua::" + GetName() + (GetHandleSynced(L) ? "::synced::" : "::") + hs->GetString());
+			CTimeProfiler::RegisterTimer(callinNames.back().c_str());
+			it = callinHashes.emplace(std::make_pair(this, hs), hashString(callinNames.back().c_str())).first;
+		}
+		callinTimer.emplace(it->second);
+	}
+#endif
 	// TODO: use closure so we do not need to copy args
 	ScopedLuaCall call(this, L, (hs != nullptr)? hs->GetString(): "LUS::?", inArgs, outArgs, errFuncIndex, popErrorFunc);
 	call.CheckFixStack(*ts);
