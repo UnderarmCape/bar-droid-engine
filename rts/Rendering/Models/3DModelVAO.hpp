@@ -48,7 +48,11 @@ public:
 public:
 	explicit S3DModelVAO();
 
+#if defined(BARDROID_SIM)
+	uint32_t GetVertOffset() const { return static_cast<uint32_t>(vertBase + vertData.size()); }
+#else
 	uint32_t GetVertOffset() const { return static_cast<uint32_t>(vertData.size()); }
+#endif
 
 	void ProcessVertices(const S3DModel* model);
 	void ProcessIndicies(S3DModel* model);
@@ -133,6 +137,11 @@ private:
 
 	std::vector<SVertexData> vertData;
 	std::vector<uint32_t   > indxData;
+#if defined(BARDROID_SIM)
+	// BAR Droid: vertices and indices already uploaded and given back (vertData/indxData hold only the ones after them)
+	size_t vertBase = 0;
+	size_t indxBase = 0;
+#endif
 
 	VBO vertVBO;
 	VBO indxVBO;

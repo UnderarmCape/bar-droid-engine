@@ -79,7 +79,7 @@ void S3DModelVAO::ProcessVertices(const S3DModel* model)
 	if (const auto* root = model->GetRootPiece(); root->vertIndex != ~0u)
 		return;
 
-	uint32_t vertIndex = static_cast<uint32_t>(vertData.size());
+	uint32_t vertIndex = GetVertOffset(); // (BAR Droid: past the vertices already uploaded and given back)
 	for (auto* modelPiece : model->pieceObjects) {
 		modelPiece->vertIndex = vertIndex;
 		const auto& modelPieceVerts = modelPiece->GetVerticesVec();
@@ -95,12 +95,17 @@ void S3DModelVAO::ProcessIndicies(S3DModel* model)
 	if (model->indxStart != ~0u)
 		return;
 
+#if defined(BARDROID_SIM)
+	const size_t ib = indxBase; // (BAR Droid: past the indices already uploaded and given back)
+#else
+	constexpr size_t ib = 0;
+#endif
 	//models should know their index offset
-	model->indxStart = static_cast<uint32_t>(std::distance(indxData.cbegin(), indxData.cend()));
+	model->indxStart = static_cast<uint32_t>(ib + std::distance(indxData.cbegin(), indxData.cend()));
 
 	for (auto* modelPiece : model->pieceObjects) {
 		if (!modelPiece->HasGeometryData()) {
-			modelPiece->indxStart = static_cast<uint32_t>(indxData.size());
+			modelPiece->indxStart = static_cast<uint32_t>(ib + indxData.size());
 			modelPiece->indxCount = 0;
 			continue;
 		}
@@ -114,13 +119,13 @@ void S3DModelVAO::ProcessIndicies(S3DModel* model)
 		std::for_each(begIdx, endIdx, [offset = modelPiece->vertIndex](uint32_t& indx) { indx += offset; }); // add per piece vertex offset to indices
 
 		//model pieces should know their index offset
-		modelPiece->indxStart = static_cast<uint32_t>(std::distance(indxData.begin(), begIdx));
+		modelPiece->indxStart = static_cast<uint32_t>(ib + std::distance(indxData.begin(), begIdx));
 
 		//model pieces should know their index count
 		modelPiece->indxCount = static_cast<uint32_t>(modelPieceIndcs.size());
 	}
 	//models should know their index count
-	model->indxCount = static_cast<uint32_t>(indxData.size() - model->indxStart);
+	model->indxCount = static_cast<uint32_t>(ib + indxData.size() - model->indxStart);
 
 	//add shatter indices to the end of indxData
 	for (const auto* modelPiece : model->pieceObjects) {
@@ -159,6 +164,53 @@ void S3DModelVAO::CreateVAO()
 	instVBO.Unbind();
 }
 
+#if defined(BARDROID_SIM)
+// BAR Droid (8v8 replays on 8 GB phones, 2026-11-04): what is new is uploaded at the buffer's running end and its CPU
+// copy given back at once (vertBase/indxBase count what was uploaded before), in either load mode: preloaded, the
+// models' copies were 440 MB kept for the whole game (clear() keeps the memory); loaded as needed (PreloadModels = 0),
+// they were never given back. And a buffer too small grows by half at least: in 8 MB steps every step made the whole
+// buffer anew and copied it (~1.9 GB of GPU memory in 8 s).
+void S3DModelVAO::UploadVBOs()
+{
+	RECOIL_DETAILED_TRACY_ZONE;
+	static constexpr size_t MEM_STEP = 8 * 1024 * 1024;
+	bool reinitVAO = (vao.GetIdRaw() == 0);
+	const auto newSize = [](size_t need, size_t have) {
+		if (need <= have)
+			return have;
+		return std::max(AlignUp(need, MEM_STEP), (have > 0) ? AlignUp(have * 3 / 2, MEM_STEP) : size_t(0));
+	};
+
+	if (!vertData.empty()) {
+		vertVBO.Bind();
+		const size_t total = vertBase + vertData.size();
+		const size_t reqSize = newSize(std::max(total, S3DModelVAO::VERT_SIZE0) * sizeof(SVertexData), vertVBO.GetSize());
+		reinitVAO |= (reqSize > vertVBO.GetSize());
+		vertVBO.Resize(reqSize, GL_STATIC_DRAW); //noop if size hasn't changed, will copy data if changed
+		vertVBO.SetBufferSubData(vertBase * sizeof(SVertexData), vertData.size() * sizeof(SVertexData), vertData.data());
+		vertVBO.Unbind();
+		vertBase = total;
+		vertUploadSize = total;
+		std::vector<SVertexData>().swap(vertData);
+	}
+
+	if (!indxData.empty()) {
+		indxVBO.Bind();
+		const size_t total = indxBase + indxData.size();
+		const size_t reqSize = newSize(std::max(total, S3DModelVAO::INDX_SIZE0) * sizeof(uint32_t), indxVBO.GetSize());
+		reinitVAO |= (reqSize > indxVBO.GetSize());
+		indxVBO.Resize(reqSize, GL_STATIC_DRAW);
+		indxVBO.SetBufferSubData(indxBase * sizeof(uint32_t), indxData.size() * sizeof(uint32_t), indxData.data());
+		indxVBO.Unbind();
+		indxBase = total;
+		indxUploadSize = total;
+		std::vector<uint32_t>().swap(indxData);
+	}
+
+	if (reinitVAO)
+		CreateVAO();
+}
+#else
 void S3DModelVAO::UploadVBOs()
 {
 	RECOIL_DETAILED_TRACY_ZONE;
@@ -168,14 +220,7 @@ void S3DModelVAO::UploadVBOs()
 	if (vertData.size() > vertUploadIndex) {
 		assert(!safeToDeleteVectors);
 		vertVBO.Bind();
-#if defined(BARDROID_SIM)
-		// BAR Droid: grown by half at least (models loaded as they are needed, PreloadModels = 0: in 8 MB steps every
-		// step made the whole buffer anew and copied it, ~1.9 GB of GPU memory in 8 s on a phone, 2026-11-04)
-		const size_t reqSize = std::max(AlignUp(std::max(vertData.size(), S3DModelVAO::VERT_SIZE0) * sizeof(SVertexData), MEM_STEP),
-			(vertVBO.GetSize() > 0 && vertData.size() * sizeof(SVertexData) > vertVBO.GetSize()) ? AlignUp(vertVBO.GetSize() * 3 / 2, MEM_STEP) : size_t(0));
-#else
 		const size_t reqSize = AlignUp(std::max(vertData.size(), S3DModelVAO::VERT_SIZE0) * sizeof(SVertexData), MEM_STEP);
-#endif
 		reinitVAO |= (reqSize > vertVBO.GetSize());
 		vertVBO.Resize(reqSize, GL_STATIC_DRAW); //noop if size hasn't changed, will copy data if changed
 		vertVBO.SetBufferSubData(vertUploadIndex * sizeof(SVertexData), (vertData.size() - vertUploadIndex) * sizeof(SVertexData), vertData.data() + vertUploadIndex);
@@ -187,12 +232,7 @@ void S3DModelVAO::UploadVBOs()
 	if (indxData.size() > indxUploadIndex) {
 		assert(!safeToDeleteVectors);
 		indxVBO.Bind();
-#if defined(BARDROID_SIM)
-		const size_t reqSize = std::max(AlignUp(std::max(indxData.size(), S3DModelVAO::INDX_SIZE0) * sizeof(   uint32_t), MEM_STEP),
-			(indxVBO.GetSize() > 0 && indxData.size() * sizeof(uint32_t) > indxVBO.GetSize()) ? AlignUp(indxVBO.GetSize() * 3 / 2, MEM_STEP) : size_t(0));
-#else
 		const size_t reqSize = AlignUp(std::max(indxData.size(), S3DModelVAO::INDX_SIZE0) * sizeof(   uint32_t), MEM_STEP);
-#endif
 		reinitVAO |= (reqSize > indxVBO.GetSize());
 		indxVBO.Resize(reqSize, GL_STATIC_DRAW); //noop if size hasn't changed, will copy data if changed
 		indxVBO.SetBufferSubData(indxUploadIndex * sizeof(   uint32_t), (indxData.size() - indxUploadIndex) * sizeof(   uint32_t), indxData.data() + indxUploadIndex);
@@ -207,19 +247,13 @@ void S3DModelVAO::UploadVBOs()
 	if (safeToDeleteVectors && !vertData.empty()) {
 		// all models have been uploaded in the calls above
 		// safe to clear CPU copy of the data
-#if defined(BARDROID_SIM)
-		// BAR Droid: their memory given back too (clear() keeps it: an 8v8's models were 440 MB of dead copies for the
-		// whole game, in an 8 GB phone's load peak)
-		std::vector<SVertexData>().swap(vertData);
-		std::vector<uint32_t>().swap(indxData);
-#else
 		vertData.clear();
 		indxData.clear();
-#endif
 		vertUploadIndex = 0;
 		indxUploadIndex = 0;
 	}
 }
+#endif
 
 void S3DModelVAO::Init()
 {
