@@ -28,6 +28,7 @@
 #include "Game/UI/KeySet.h"
 #include "Game/UI/MiniMap.h"
 #include "Rendering/GlobalRendering.h"
+#include "Rendering/BarDroidGpuTimer.h"
 #include "Rml/Backends/RmlUi_Backend.h"
 #include "Sim/Misc/GlobalSynced.h"
 #include "Sim/Misc/TeamHandler.h"
@@ -150,7 +151,8 @@ static int handlepanic(lua_State* L)
 // profiler is on ("/debug 1 0"; drawDebug goes with it) they become its timers: the time of every widget and gadget
 // per call-in, from the game's own marks. Lua runs on the main thread only, so one stack serves every handle.
 namespace {
-	struct BarDroidZone { unsigned hash; spring_time start; };
+	// gpu: a GPU timer runs for this mark (a widget's or gadget's drawing call-in: "W:DrawWorld:<name>", BarDroidGpuTimer.h)
+	struct BarDroidZone { unsigned hash; spring_time start; bool gpu = false; };
 	std::vector<BarDroidZone> barDroidZones;
 	spring::unordered_map<std::string, unsigned> barDroidZoneHashes;
 	std::deque<std::string> barDroidZoneNames; // (the profiler keeps the names)
@@ -177,7 +179,15 @@ namespace {
 			it = barDroidZoneHashes.emplace(barDroidZoneNames.back(), hashString(barDroidZoneNames.back().c_str())).first;
 		}
 
-		barDroidZones.push_back({it->second, spring_gettime()});
+		// (the GPU's time of a drawing call-in, one widget or gadget: "W:DrawWorld:<name>", two colons; the handler's own
+		// mark round all of them, "W:DrawWorld", gets none)
+		const std::string& mark = it->first;
+		const size_t c1 = mark.find(':');
+		const bool drawing = c1 != std::string::npos && mark.compare(c1 + 1, 4, "Draw") == 0
+			&& mark.find(':', c1 + 1) != std::string::npos;
+		const bool gpu = drawing && BarDroidGpuTimer::BeginNamed(mark);
+
+		barDroidZones.push_back({it->second, spring_gettime(), gpu});
 		return 0;
 	}
 
@@ -189,6 +199,8 @@ namespace {
 		const BarDroidZone zone = barDroidZones.back();
 		barDroidZones.pop_back();
 
+		if (zone.gpu)
+			BarDroidGpuTimer::EndNamed();
 		if (zone.hash != 0 && globalRendering->drawDebug)
 			CTimeProfiler::GetInstance().AddTime(zone.hash, zone.start, spring_gettime() - zone.start, false, false, false);
 

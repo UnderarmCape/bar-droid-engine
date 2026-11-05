@@ -33,6 +33,7 @@
 #include "ExternalAI/EngineOutHandler.h"
 #include "ExternalAI/SkirmishAIHandler.h"
 #include "Rendering/WorldDrawer.h"
+#include "Rendering/BarDroidGpuTimer.h"
 #include "Rendering/Env/IWater.h"
 #include "Rendering/Env/WaterRendering.h"
 #include "Rendering/Env/MapRendering.h"
@@ -1496,12 +1497,18 @@ bool CGame::Draw() {
 	//FIXME move both to UpdateUnsynced?
 	CTeamHighlight::Enable(spring_tomsecs(currentTimePreDraw));
 	{
-		minimap->Update();
+		{
+			BARDROID_GPU_TIMER("MinimapUpdate");
+			minimap->Update();
+		}
 
 		// note: neither this call nor DrawWorld can be made conditional on minimap->GetMaximized()
 		// minimap never covers entire screen when maximized unless map aspect-ratio matches screen
 		// (unlikely);
-		worldDrawer.GenerateIBLTextures();
+		{
+			BARDROID_GPU_TIMER("IBLTextures");
+			worldDrawer.GenerateIBLTextures();
+		}
 
 		// restore back to the default FBO / Viewport
 		if (FBO::IsSupported())
@@ -1515,21 +1522,27 @@ bool CGame::Draw() {
 	{
 		SCOPED_TIMER("Draw::Screen");
 		SCOPED_GL_DEBUGGROUP("Draw::Screen");
-		if (CUnitDrawer::UseScreenIcons())
+		if (CUnitDrawer::UseScreenIcons()) {
+			BARDROID_GPU_TIMER("ScreenIcons");
 			unitDrawer->DrawUnitIconsScreen();
+		}
 
-		eventHandler.DrawScreenEffects();
+		{
+			eventHandler.DrawScreenEffects();
+		}
 
-		hudDrawer->Draw((gu->GetMyPlayer())->fpsController.GetControllee());
-		debugDrawerAI->Draw();
+		{
+			hudDrawer->Draw((gu->GetMyPlayer())->fpsController.GetControllee());
+			debugDrawerAI->Draw();
 
-		DrawInputReceivers();
-		DrawInputText();
-		DrawInterfaceWidgets();
-		RmlGui::RenderFrame();
-		mouse->DrawCursor();
+			DrawInputReceivers();
+			DrawInputText();
+			DrawInterfaceWidgets();
+			RmlGui::RenderFrame();
+			mouse->DrawCursor();
 
-		eventHandler.DrawScreenPost();
+			eventHandler.DrawScreenPost();
+		}
 	}
 
 	glEnable(GL_DEPTH_TEST);
