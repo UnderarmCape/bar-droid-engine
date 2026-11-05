@@ -42,6 +42,9 @@
 #include "System/Misc/TracyDefs.h"
 
 CONFIG(bool, LogClientData).defaultValue(false);
+#ifdef BARDROID_SIM
+CONFIG(int, BarDroidMaxSimPerDraw).defaultValue(0).minimumValue(0).description("BAR Droid: simulated frames run per drawn frame while fewer than 4 are waiting (one more up to a second's worth, then all as usual); 0: as usual");
+#endif
 
 #define LOG_SECTION_NET "Net"
 LOG_REGISTER_SECTION_GLOBAL(LOG_SECTION_NET)
@@ -269,12 +272,37 @@ void CGame::ClientReadNet()
 	const bool haveServerDemo = (gameServer != nullptr && gameServer->GetDemoReader() != nullptr);
 	const bool haveClientDemo = (clientNet->GetDemoRecorder() != nullptr);
 
+#ifdef BARDROID_SIM
+	// BAR Droid (engine branch): BarDroidMaxSimPerDraw. With the frame cap a drawn frame that took one simulated frame
+	// fits its slot and one that took two does not; once one was late the next took two to catch up, and so on (a late
+	// 8v8 on the dev phone: a third of the frames late, the cap waiting ~7 ms in the others). So while few simulated
+	// frames are waiting, one is run per drawn frame (two from 4 waiting, all of them from a second's worth, as before):
+	// the game trails real time by a frame or three instead. Which frames run is unchanged, only when.
+	static const int barDroidMaxSim = configHandler->GetInt("BarDroidMaxSimPerDraw");
+	int barDroidSimRun = 0;
+#endif
+
 	// now really process the messages
 	while (true) {
 		if (msgProcTimeLeft <= 0.0f)
 			break;
 		if (spring_gettime() > msgProcEndTime)
 			break;
+#ifdef BARDROID_SIM
+		if (barDroidMaxSim > 0 && barDroidSimRun >= barDroidMaxSim && !skipping) {
+			// (the frames waiting counted only up to a second's worth: GetNumQueuedSimFrameMessages reads the whole queue,
+			// thousands of frames while a replay skips ahead, and here it would run after every simulated frame)
+			uint32_t waiting = 0;
+			for (uint32_t i = 0; waiting < GAME_SPEED; ++i) {
+				const std::shared_ptr<const netcode::RawPacket> p = clientNet->Peek(i);
+				if (p == nullptr)
+					break;
+				waiting += (p->data[0] == NETMSG_NEWFRAME || p->data[0] == NETMSG_KEYFRAME);
+			}
+			if (waiting < GAME_SPEED && barDroidSimRun >= barDroidMaxSim + (waiting > 3))
+				break;
+		}
+#endif
 
 		lastNetPacketProcessTime = spring_gettime();
 
@@ -616,6 +644,9 @@ void CGame::ClientReadNet()
 				lastSimFrameNetPacketTime = spring_gettime();
 
 				SimFrame();
+#ifdef BARDROID_SIM
+				barDroidSimRun++;
+#endif
 
 #ifdef SYNCCHECK
 				// both NETMSG_SYNCRESPONSE and NETMSG_NEWFRAME are used for ping calculation by server
