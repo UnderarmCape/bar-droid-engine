@@ -337,11 +337,48 @@ void CUnitHandler::UpdateUnitMoveTypes()
 void CUnitHandler::UpdateUnitLosStates()
 {
 	ZoneScopedC(tracy::Color::Goldenrod);
+#ifdef BARDROID_SIM
+	// BAR Droid (engine branch): every unit's new LOS status per ally team worked out on the workers (CalcLosStatus
+	// only reads: the LOS maps, which change in losHandler->Update later in the frame, the unit's place and its own
+	// status), then set in the original order on this thread, where the Lua call-ins run. A status a call-in changed
+	// meanwhile (a gadget setting a LOS mask) is worked out again there, so the result is the serial loop's. ~2.5% of
+	// the main thread in a late 8v8 (simpleperf, dev phone).
+	SCOPED_TIMER("Sim::Unit::LosStates");
+	static std::vector<unsigned short> before, after;
+	static constexpr int BLOCK = 32;
+	const int numAllyTeams = teamHandler.ActiveAllyTeams();
+	const int numUnits = activeUnits.size();
+	before.resize(size_t(numUnits) * numAllyTeams);
+	after.resize(before.size());
+
+	for_mt(0, (numUnits + BLOCK - 1) / BLOCK, [this, numUnits, numAllyTeams](const int block) {
+		for (int i = block * BLOCK, end = std::min(numUnits, i + BLOCK); i < end; ++i) {
+			CUnit* unit = activeUnits[i];
+			for (int at = 0; at < numAllyTeams; ++at) {
+				const unsigned short cur = unit->losStatus[at];
+				before[size_t(i) * numAllyTeams + at] = cur;
+				after[size_t(i) * numAllyTeams + at] = ((cur & LOS_ALL_MASK_BITS) == LOS_ALL_MASK_BITS) ? cur : unit->CalcLosStatus(at);
+			}
+		}
+	});
+	for (int i = 0; i < numUnits; ++i) {
+		CUnit* unit = activeUnits[i];
+		for (int at = 0; at < numAllyTeams; ++at) {
+			const size_t k = size_t(i) * numAllyTeams + at;
+			if (unit->losStatus[at] != before[k]) {
+				unit->UpdateLosStatus(at); // (changed by a call-in since: as the serial loop would)
+			} else if (after[k] != before[k]) {
+				unit->SetLosStatus(at, after[k]);
+			}
+		}
+	}
+#else
 	for (CUnit* unit: activeUnits) {
 		for (int at = 0; at < teamHandler.ActiveAllyTeams(); ++at) {
 			unit->UpdateLosStatus(at);
 		}
 	}
+#endif
 }
 
 
