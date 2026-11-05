@@ -169,6 +169,10 @@ private:
 
 	/// used to render particle effects in back-to-front order. {unsorted, sorted}
 	std::array<std::vector<CProjectile*>, 2> drawParticles;
+#if defined(BARDROID_SIM)
+	/// BAR Droid: at most this many see-through projectiles and particles drawn a frame, the nearest (0: all)
+	size_t maxDrawnParticles = 0;
+#endif
 
 	bool drawSorted = true;
 

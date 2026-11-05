@@ -47,6 +47,7 @@
 CONFIG(int, SoftParticles).defaultValue(1).safemodeValue(0).description("Soften up CEG particles on clipping edges");
 #if defined(BARDROID_SIM)
 CONFIG(int, ProjectileAtlasDownscale).defaultValue(1).minimumValue(1).maximumValue(4).description("BAR Droid: shrink the projectile and ground effect textures by this factor on each side (graphics memory on phones)");
+CONFIG(int, MaxDrawnParticles).defaultValue(0).minimumValue(0).description("BAR Droid: draw at most this many see-through projectiles and particles a frame, the nearest to the camera (0: all; drawing only, the simulation keeps every one)");
 #endif
 
 static uint32_t sortCamType = 0;
@@ -101,6 +102,9 @@ void CProjectileDrawer::Init() {
 	textureAtlas->downscale = groundFXAtlas->downscale = configHandler->GetInt("ProjectileAtlasDownscale");
 	if (textureAtlas->downscale > 1)
 		LOG("[ProjectileDrawer] BAR Droid: projectile and ground effect textures shrunk %dx on each side", textureAtlas->downscale);
+	maxDrawnParticles = static_cast<size_t>(configHandler->GetInt("MaxDrawnParticles"));
+	if (maxDrawnParticles > 0)
+		LOG("[ProjectileDrawer] BAR Droid: at most %u see-through particles drawn a frame, the nearest", static_cast<unsigned>(maxDrawnParticles));
 #endif
 
 	LuaParser resourcesParser("gamedata/resources.lua", SPRING_VFS_MOD_BASE, SPRING_VFS_ZIP);
@@ -781,6 +785,25 @@ void CProjectileDrawer::DrawAlpha(bool drawAboveWater, bool drawBelowWater, bool
 
 	// set static variable to facilite sorting
 	sortCamType = camera->GetCamType();
+
+#if defined(BARDROID_SIM)
+	// BAR Droid: big battles on phones (Kailil, 2026-11-04: "cutting drawing projectiles if the total projectiles is over
+	// x amount"): each particle is built on the CPU and blended on the GPU every frame. Only the nearest ones are drawn;
+	// the simulation and every other pass keep them all.
+	if (maxDrawnParticles > 0) {
+		auto& sorted = drawParticles[true];
+		auto& unsorted = drawParticles[false];
+		if (sorted.size() > maxDrawnParticles) {
+			std::nth_element(sorted.begin(), sorted.begin() + maxDrawnParticles, sorted.end(), [](const CProjectile* a, const CProjectile* b) {
+				return a->GetSortDist(sortCamType) < b->GetSortDist(sortCamType);
+			});
+			sorted.resize(maxDrawnParticles);
+		}
+		const size_t room = maxDrawnParticles - sorted.size();
+		if (unsorted.size() > room)
+			unsorted.resize(room);
+	}
+#endif
 
 	{
 		ZoneScopedN("ProjectileDrawer::DrawAlpha(SO)");
