@@ -882,7 +882,15 @@ static inline void for_mt_chunk(int b, int e, F&& f, int minChunkSize = 1, int m
 
 	static const int maxThreads = ThreadPool::GetNumThreads();
 
+#ifdef BARDROID_SIM
+	// BAR Droid (engine branch): about four chunks a thread, taken as each thread comes free (for_mt below), not one
+	// equal chunk each: on a phone the threads run on cores of different speeds and clocks, and the main thread waited
+	// for the slowest chunk (~6% of its time spinning in a late 8v8 on the dev phone). Each index is still done once by
+	// one thread, so nothing changes in the results.
+	const int chunkSize = std::clamp(numElems / (maxThreads * 4) + 1, minChunkSize, maxChunkSize);
+#else
 	const int chunkSize = std::clamp(numElems / maxThreads + (numElems % maxThreads != 0), minChunkSize, maxChunkSize);
+#endif
 	const int numThreads = numElems / chunkSize + (numElems % chunkSize != 0);
 
 	if (numThreads == 1) {
