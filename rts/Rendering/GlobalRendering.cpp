@@ -668,6 +668,27 @@ void CGlobalRendering::PostInit() {
 	UpdateTimer();
 }
 
+#ifdef BARDROID_SIM
+// BAR Droid (engine branch): the deferred present (BarDroidDeferSwap, SpringApp::Update). On the phone Mesa's driver
+// thread turns a frame's GL calls into GPU commands behind the main thread, and SDL_GL_SwapWindow waits until it has
+// caught up: ~7 ms of every drawn frame in a late 8v8 (the pace library's swap log). Held, the swap's own work (render
+// buffers, buffer fences) still ends the frame, but the window's buffer is handed over only just before the next frame
+// is drawn, after the next simulated frames ran while the driver thread finished. At most one frame is held: a second
+// swap first presents the one before (the load screen's own swaps). The picture shows one simulation step later.
+CONFIG(bool, BarDroidDeferSwap).defaultValue(false).description("BAR Droid: hand a drawn frame to the window just before the next frame is drawn, after the simulation ran, instead of waiting for the GPU driver's thread at the end of the frame");
+static bool barDroidHoldPresent = false;
+static SDL_Window* barDroidPendingPresent = nullptr;
+void BarDroidHoldPresent(bool hold) { barDroidHoldPresent = hold; }
+void BarDroidPresent()
+{
+	if (barDroidPendingPresent == nullptr)
+		return;
+	SCOPED_TIMER("Misc::BarDroidPresent");
+	SDL_Window* w = std::exchange(barDroidPendingPresent, nullptr);
+	SDL_GL_SwapWindow(w);
+}
+#endif
+
 void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
 {
 	spring_time pre;
@@ -700,10 +721,20 @@ void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
 			}
 		#endif
 		
+		#ifdef BARDROID_SIM
+		if (barDroidHoldPresent) {
+			BarDroidPresent(); // (a frame still held: shown first)
+			barDroidPendingPresent = sdlWindow;
+		} else {
+			BarDroidPresent();
+			SDL_GL_SwapWindow(sdlWindow);
+		}
+		#else
 		SDL_GL_SwapWindow(sdlWindow);
+		#endif
 
 		#ifdef _WIN32
-			if (forceDWMFlush == 2){ 
+			if (forceDWMFlush == 2){
 				ZoneScopedN("CGlobalRendering::SwapBuffers::DWMFlushPost");
 				if (DwmFlush)
 					reinterpret_cast<DwmFlushT>(DwmFlush)();
