@@ -163,6 +163,14 @@ void CWorldDrawer::InitPost() const
 				mv.UploadVBOs();
 			}
 			mv.SetSafeToDeleteVectors();
+#if defined(BARDROID_SIM)
+			{
+				// BAR Droid: the CPU copies go now, not at the first upload after the load (nothing new to upload: it only
+				// clears), before the pathfinder and LuaRules load
+				auto lock = CLoadLock::GetUniqueLock();
+				mv.UploadVBOs();
+			}
+#endif
 			modelLoader.LogErrors();
 			CModelsLock::SetThreadSafety(false); //all models are already preloaded
 		}

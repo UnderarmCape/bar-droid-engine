@@ -195,8 +195,15 @@ void S3DModelVAO::UploadVBOs()
 	if (safeToDeleteVectors && !vertData.empty()) {
 		// all models have been uploaded in the calls above
 		// safe to clear CPU copy of the data
+#if defined(BARDROID_SIM)
+		// BAR Droid: their memory given back too (clear() keeps it: an 8v8's models were 440 MB of dead copies for the
+		// whole game, in an 8 GB phone's load peak)
+		std::vector<SVertexData>().swap(vertData);
+		std::vector<uint32_t>().swap(indxData);
+#else
 		vertData.clear();
 		indxData.clear();
+#endif
 		vertUploadIndex = 0;
 		indxUploadIndex = 0;
 	}
