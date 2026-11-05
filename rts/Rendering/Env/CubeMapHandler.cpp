@@ -21,6 +21,13 @@
 CONFIG(int, CubeTexSizeSpecular).defaultValue(128).minimumValue(1).description("The square resolution of each face of the specular cubemap.");
 CONFIG(int, CubeTexSizeReflection).defaultValue(128).minimumValue(1).description("The square resolution of each face of the environment reflection cubemap.");
 CONFIG(bool, CubeTexGenerateMipMaps).defaultValue(false).description("Generate mipmaps for the reflection and specular cubemap textures, useful for efficient subsampling and blurring.");
+#ifdef BARDROID_SIM
+// BAR Droid (engine branch): the reflection cubemap's faces (the ground and sky seen from the camera, for the units'
+// reflections) are drawn one a frame, each a terrain pass: ~0.5 ms of a phone's GPU every frame for reflections too
+// small to see change at a phone's size. Drawing only.
+CONFIG(int, BarDroidReflectionEvery).defaultValue(1).minimumValue(1).maximumValue(60)
+	.description("BAR Droid: the environment reflection cubemap gets one face drawn every this many drawn frames (1: every frame)");
+#endif
 
 CubeMapHandler cubeMapHandler;
 
@@ -135,6 +142,11 @@ void CubeMapHandler::Free() {
 void CubeMapHandler::UpdateReflectionTexture()
 {
 	RECOIL_DETAILED_TRACY_ZONE;
+#ifdef BARDROID_SIM
+	static const int every = configHandler->GetInt("BarDroidReflectionEvery");
+	if (every > 1 && (globalRendering->drawFrame % every) != 0)
+		return;
+#endif
 
 	// NOTE:
 	//   we unbind later in WorldDrawer::GenerateIBLTextures() to save render
