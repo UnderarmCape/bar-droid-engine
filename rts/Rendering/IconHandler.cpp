@@ -21,6 +21,15 @@
 #include "Textures/TextureRenderAtlas.h"
 #include "System/Exceptions.h"
 
+#ifdef BARDROID_SIM
+#include "System/Config/ConfigHandler.h"
+// BAR Droid (engine branch; Kailil, 2026-11-06: "reduce all other aspects of the game"): the unit icons' atlas is
+// drawn into, so a phone's Mesa keeps it uncompressed (8v8 on Supreme Isthmus: 4080x3256, 51 MB of GPU memory) for
+// icons drawn a few dozen pixels big. An icon picture larger than this on a side gets a place this size, drawn into
+// it from its own mipmaps. Drawing only. 0: as they are.
+CONFIG(int, BarDroidIconMaxSize).defaultValue(0).minimumValue(0).description("BAR Droid: unit icon pictures larger than this on a side get this size in the icon atlas (GPU memory; 0: as they are)");
+#endif
+
 namespace icon {
 
 CIconHandler iconHandler;
@@ -67,6 +76,9 @@ bool CIconHandler::UpdateAtlasData(size_t atlasIdx)
 		return true;
 
 	atlas = std::make_unique<CTextureRenderAtlas>(CTextureAtlas::ATLAS_ALLOC_LEGACY, 0, 0, DEFAULT_NUM_OF_TEXTURE_LEVELS, GL_RGBA8, IntToString(atlasIdx, "IconsAtlas_%i"));
+#if defined(BARDROID_SIM) && !defined(HEADLESS)
+	atlas->SetMaxSubTexSide(configHandler->GetInt("BarDroidIconMaxSize"));
+#endif
 
 	spring::unordered_set<std::string> invalidIcons;
 

@@ -82,6 +82,9 @@ private:
 	// unsigned int pboUnsyncedBit = 0;
 	bool smfTextureStreaming = false;
 	float smfTextureLodBias = 0.0f;
+	// BAR Droid (BarDroidMapTileSkip): the finest mip levels of every tile left out of `tiles` (streaming only)
+	int tileSkip = 0;
+	size_t tileStride = 0;
 };
 
 #endif // _BF_GROUND_TEXTURES_H_

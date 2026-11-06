@@ -201,6 +201,11 @@ bool CTextureRenderAtlas::AddTexFromBitmapRaw(const std::string& name, const CBi
 			static_cast<int>(bm.xsize * (subTexCoords.z - subTexCoords.x)),
 			static_cast<int>(bm.ysize * (subTexCoords.w - subTexCoords.y))
 		};
+		if (maxSubTexSide > 0 && std::max(subTexSize.x, subTexSize.y) > maxSubTexSide) {
+			const float s = static_cast<float>(maxSubTexSide) / std::max(subTexSize.x, subTexSize.y);
+			subTexSize = { std::max(1, static_cast<int>(subTexSize.x * s)), std::max(1, static_cast<int>(subTexSize.y * s)) };
+			subTexLod[uniqueSubTexStr] = std::log2(1.0f / s);
+		}
 		atlasAllocator->AddEntry(uniqueSubTexStr, subTexSize);
 		uniqueSubTextureMap[uniqueSubTexStr] = uniqueSubTex;
 	}
@@ -499,6 +504,11 @@ bool CTextureRenderAtlas::CreateAtlasTexture()
 
 						auto texBind = GL::TexBind(GL_TEXTURE_2D, srcTexID);
 						shader->SetUniform("srcClamp", srcSubTC.x, srcSubTC.y, srcSubTC.z, srcSubTC.w);
+						if (!subTexLod.empty()) {
+							// (BarDroidIconMaxSize: a shrunk picture from the source mipmap of its new size)
+							const auto lodIt = subTexLod.find(uniqTexName);
+							shader->SetUniform("lod", (lodIt != subTexLod.end()) ? std::floor(lodIt->second) : 0.0f);
+						}
 
 						// Use GL_LINEAR to avoid GL_NEAREST ambiguity at texel boundaries.
 						// At mip levels > 0, for odd-positioned atlas entries, the source UV can land
