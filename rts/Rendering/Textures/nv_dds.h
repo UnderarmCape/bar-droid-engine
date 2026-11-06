@@ -223,6 +223,9 @@ namespace nv_dds
 
             bool upload_texture1D() const;
             bool upload_texture2D(unsigned int imageIndex, int target) const;
+            // BAR Droid (engine branch): the same from level skipLevels down, as level 0 (a smaller texture with the
+            // file's own smaller mipmaps; nothing re-encoded): S3OTextureHandler's BarDroidModelTextureMax
+            bool upload_texture2D_from(unsigned int imageIndex, int target, unsigned int skipLevels) const;
             bool upload_texture3D() const;
             bool upload_textureRectangle() const;
             bool upload_textureCubemap() const;

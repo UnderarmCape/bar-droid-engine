@@ -858,6 +858,40 @@ bool CDDSImage::upload_texture2D(unsigned int imageIndex, int target) const
     return true;
 }
 
+bool CDDSImage::upload_texture2D_from(unsigned int imageIndex, int target, unsigned int skipLevels) const
+{
+	RECOIL_DETAILED_TRACY_ZONE;
+	if (skipLevels == 0)
+		return upload_texture2D(imageIndex, target);
+
+	assert(m_valid);
+	assert(imageIndex < m_images.size());
+	const CTexture &image = m_images[imageIndex];
+	// (level 0 the image itself, level n its mipmap n - 1)
+	if (skipLevels > image.get_num_mipmaps())
+		return upload_texture2D(imageIndex, target);
+
+	GLint alignment = -1;
+	if (!is_compressed() && !is_dword_aligned()) {
+		glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
+		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+	}
+	for (unsigned int level = skipLevels; level <= image.get_num_mipmaps(); level++) {
+		const CSurface &surface = image.get_mipmap(level - 1);
+		const GLint glLevel = static_cast<GLint>(level - skipLevels);
+		if (is_compressed()) {
+			glCompressedTexImage2DARB(target, glLevel, m_format, surface.get_width(), surface.get_height(), 0,
+				surface.get_size(), surface);
+		} else {
+			glTexImage2D(target, glLevel, m_components, surface.get_width(), surface.get_height(), 0, m_format,
+				GL_UNSIGNED_BYTE, surface);
+		}
+	}
+	if (alignment != -1)
+		glPixelStorei(GL_UNPACK_ALIGNMENT, alignment);
+	return true;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // uploads a compressed/uncompressed 3D texture
 bool CDDSImage::upload_texture3D() const

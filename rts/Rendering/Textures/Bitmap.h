@@ -125,6 +125,9 @@ public:
 	#endif
 
 	bool compressed = false;
+	// BAR Droid (engine branch): a DDS texture uploaded from this many levels down (S3OTextureHandler's
+	// BarDroidModelTextureMax; 0: the whole file, as always)
+	uint8_t ddsSkipLevels = 0;
 };
 
 #endif // _BITMAP_H

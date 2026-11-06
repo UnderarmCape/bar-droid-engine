@@ -1784,7 +1784,10 @@ uint32_t CBitmap::CreateDDSTexture(const GL::TextureCreationParams& tcp) const
 			glEnable(GL_TEXTURE_2D);
 			glBindTexture(GL_TEXTURE_2D, texID);
 
-			if (!ddsimage.upload_texture2D(0, GL_TEXTURE_2D)) {
+		{
+			// (BAR Droid: ddsSkipLevels, a smaller texture from the file's own mipmaps; 0 as always)
+			const unsigned int skip = ddsSkipLevels <= ddsimage.get_num_mipmaps() ? ddsSkipLevels : 0;
+			if (!ddsimage.upload_texture2D_from(0, GL_TEXTURE_2D, skip)) {
 				glDeleteTextures(1, &texID);
 				texID = 0;
 				break;
@@ -1795,8 +1798,9 @@ uint32_t CBitmap::CreateDDSTexture(const GL::TextureCreationParams& tcp) const
 			if (tcp.aniso > 0.0f)
 				glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, tcp.aniso);
 
-			HandleDDSMipmap(GL_TEXTURE_2D, ddsimage.get_num_mipmaps(), tcp.GetMinFilter(ddsimage.get_num_mipmaps()));
+			HandleDDSMipmap(GL_TEXTURE_2D, ddsimage.get_num_mipmaps() - skip, tcp.GetMinFilter(ddsimage.get_num_mipmaps() - skip));
 			break;
+		}
 
 		case nv_dds::Texture3D:
 			glEnable(GL_TEXTURE_3D);
