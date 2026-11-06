@@ -32,8 +32,10 @@ namespace {
 	// archive and without the raw file system, as BAR's widget handler reads its own widgets) also see
 	// BarDroidGameWidgetsDir's LuaUI/Widgets, under their LuaUI/Widgets names. The synced states, the archives and their
 	// checksums are untouched; raw reads do not see the folder (BAR's handler lists the user widgets raw: the app's are
-	// not among them). Returns "<dir>/", or "" for none.
-	const std::string& BarDroidGameWidgets(lua_State* L, bool synced, const std::string& modes)
+	// not among them). Loading a file there also answers modes with the raw file system in them, once the file was
+	// not found the usual way: an older BAR release's handler (a replay plays the release it was recorded with) loads its
+	// own widgets "raw first". Returns "<dir>/", or "" for none.
+	const std::string& BarDroidGameWidgets(lua_State* L, bool synced, const std::string& modes, bool listing)
 	{
 		static const std::string none;
 		static const std::string dir = [] {
@@ -42,7 +44,9 @@ namespace {
 				d += '/';
 			return d;
 		}();
-		if (synced || dir.empty() || modes.find(SPRING_VFS_RAW[0]) != std::string::npos || modes.find(SPRING_VFS_MOD[0]) == std::string::npos)
+		if (synced || dir.empty() || modes.find(SPRING_VFS_MOD[0]) == std::string::npos)
+			return none;
+		if (listing && modes.find(SPRING_VFS_RAW[0]) != std::string::npos)
 			return none;
 		const CLuaHandle* handle = CLuaHandle::GetHandle(L);
 		if (handle == nullptr || handle->GetName() != "LuaUI")
@@ -481,7 +485,7 @@ int LuaVFS::LoadFile(lua_State* L, bool synced)
 	}
 #ifdef BARDROID_SIM
 	// (the app's widgets as the game's: BarDroidGameWidgets)
-	const std::string& gameWidgets = BarDroidGameWidgets(L, synced, modes);
+	const std::string& gameWidgets = BarDroidGameWidgets(L, synced, modes, false);
 	if (!gameWidgets.empty() && BarDroidWidgetFile(filename) && LoadFileWithModes(gameWidgets + filename, data, SPRING_VFS_RAW) == 1) {
 		LuaUtils::TracyRemoveAlsoExtras(data.data());
 		lua_pushsstring(L, data);
@@ -545,7 +549,7 @@ int LuaVFS::FileExists(lua_State* L, bool synced)
 #ifdef BARDROID_SIM
 	// (the app's widgets as the game's: BarDroidGameWidgets)
 	if (!exists && BarDroidWidgetFile(filename)) {
-		const std::string& gameWidgets = BarDroidGameWidgets(L, synced, vfsModes);
+		const std::string& gameWidgets = BarDroidGameWidgets(L, synced, vfsModes, false);
 		exists = !gameWidgets.empty() && CFileHandler::FileExists(gameWidgets + filename, SPRING_VFS_RAW);
 	}
 #endif
@@ -620,7 +624,7 @@ int LuaVFS::DirList(lua_State* L, bool synced)
 		}
 	}
 	// the app's widgets as the game's (BarDroidGameWidgets): BAR's handler lists the game's LuaUI/Widgets with them in
-	const std::string& gameWidgets = BarDroidGameWidgets(L, synced, modes);
+	const std::string& gameWidgets = BarDroidGameWidgets(L, synced, modes, true);
 	if (!gameWidgets.empty() && BarDroidWidgetDir(dir)) {
 		std::vector<std::string> files = CFileHandler::DirList(dir, pattern, modes, recursive);
 		const std::string prefix = BarDroidVfsPath(gameWidgets);
