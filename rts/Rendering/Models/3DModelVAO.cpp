@@ -16,16 +16,20 @@
 #include "System/Misc/TracyDefs.h"
 
 #if defined(BARDROID_SIM) && !defined(HEADLESS)
+#include <cstring>
 #include "Rendering/GlobalRendering.h"
 #include "System/Config/ConfigHandler.h"
+#include "System/Log/ILog.h"
 
 // BAR Droid (engine branch): every Submit writes the instance buffer from its start, and every immediate draw (units
 // being built, build previews) one slot of it, while the frame's earlier draws still read it. A tiler's driver keeps
 // those draws' data by copying the whole buffer (1.08 MB) first, or stalls. 1: its storage given up before each
-// batched write (a fresh one, nothing copied; the earlier draws keep theirs); 2: before each immediate write as well.
-// Drawing only; read every drawn frame (in-game A/B).
-CONFIG(int, BarDroidInstanceOrphan).defaultValue(0).minimumValue(0).maximumValue(2)
-	.description("BAR Droid: the model instance buffer's storage given up before each write (1: batched, 2: immediate too) instead of written while in use");
+// batched write (a fresh one, nothing copied; the earlier draws keep theirs); 2: before each immediate write as well
+// (both measured slower on the dev phone's Freedreno); 3: every write into a persistently mapped ring of two halves
+// instead, the instance attribute pointed at it (no driver sync per write: a fence per half). Drawing only; read every
+// drawn frame (in-game A/B).
+CONFIG(int, BarDroidInstanceOrphan).defaultValue(0).minimumValue(0).maximumValue(3)
+	.description("BAR Droid: model instance data 1: storage given up before batched writes, 2: before every write, 3: written into a persistently mapped ring; 0: written while in use");
 
 static int BarDroidInstanceOrphan()
 {
@@ -67,6 +71,68 @@ void S3DModelVAO::EnableAttribs(bool inst) const
 	}
 }
 
+#if defined(BARDROID_SIM) && !defined(HEADLESS)
+bool S3DModelVAO::BarDroidRingReady()
+{
+	if (barDroidRingPtr != nullptr)
+		return true;
+	if (barDroidRingFailed)
+		return false;
+	barDroidRingFailed = true;
+	if (!GLAD_GL_ARB_buffer_storage) {
+		LOG_L(L_WARNING, "[S3DModelVAO] BAR Droid: no ARB_buffer_storage, instance data as before");
+		return false;
+	}
+	const GLsizeiptr size = GLsizeiptr(2) * BARDROID_RING_HALF * sizeof(SInstanceData);
+	const GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+	glGenBuffers(1, &barDroidRingBuf);
+	glBindBuffer(GL_ARRAY_BUFFER, barDroidRingBuf);
+	glBufferStorage(GL_ARRAY_BUFFER, size, nullptr, flags);
+	barDroidRingPtr = static_cast<uint8_t*>(glMapBufferRange(GL_ARRAY_BUFFER, 0, size, flags));
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+	if (barDroidRingPtr == nullptr) {
+		LOG_L(L_WARNING, "[S3DModelVAO] BAR Droid: the instance ring could not be mapped, instance data as before");
+		glDeleteBuffers(1, &barDroidRingBuf);
+		barDroidRingBuf = 0;
+		return false;
+	}
+	barDroidRingFailed = false;
+	LOG("[S3DModelVAO] BAR Droid: instance data through a mapped ring (%u KB)", unsigned(size / 1024));
+	return true;
+}
+
+// count instances' room in the ring (a half's end is not crossed); entering a half waits for the fence set when it was
+// last left (half a ring of draws ago: done by then), leaving one sets its fence
+uint32_t S3DModelVAO::BarDroidRingWrite(const SInstanceData* data, uint32_t count)
+{
+	assert(count <= BARDROID_RING_HALF);
+	if (barDroidRingPos + count > (barDroidRingHalf + 1) * BARDROID_RING_HALF) {
+		barDroidRingFence[barDroidRingHalf] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+		barDroidRingHalf ^= 1;
+		if (GLsync& f = barDroidRingFence[barDroidRingHalf]; f != nullptr) {
+			glClientWaitSync(f, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ull);
+			glDeleteSync(f);
+			f = nullptr;
+		}
+		barDroidRingPos = barDroidRingHalf * BARDROID_RING_HALF;
+	}
+	const uint32_t pos = barDroidRingPos;
+	memcpy(barDroidRingPtr + size_t(pos) * sizeof(SInstanceData), data, size_t(count) * sizeof(SInstanceData));
+	barDroidRingPos += count;
+	return pos;
+}
+
+// (the model VAO bound) the instance attribute read from the ring or from instVBO
+void S3DModelVAO::BarDroidPointInstances(bool ring)
+{
+	if (ring == barDroidOnRing)
+		return;
+	glBindBuffer(GL_ARRAY_BUFFER, ring ? barDroidRingBuf : instVBO.GetId());
+	glVertexAttribIPointer(6, 4, GL_UNSIGNED_INT, sizeof(SInstanceData), (const void*)offsetof(SInstanceData, matOffset));
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+	barDroidOnRing = ring;
+}
+#endif
 void S3DModelVAO::DisableAttribs() const
 {
 	RECOIL_DETAILED_TRACY_ZONE;
@@ -207,6 +273,9 @@ void S3DModelVAO::CreateVAO()
 
 	indxVBO.Unbind();
 	instVBO.Unbind();
+#if defined(BARDROID_SIM) && !defined(HEADLESS)
+	barDroidOnRing = false; // (a new VAO reads instVBO)
+#endif
 }
 
 #if defined(BARDROID_SIM)
@@ -528,6 +597,21 @@ void S3DModelVAO::Submit(GLenum mode, bool bindUnbind)
 	if (submitCmds.empty())
 		return;
 
+#if defined(BARDROID_SIM) && !defined(HEADLESS)
+	if (BarDroidInstanceOrphan() == 3 && BarDroidRingReady()) {
+		const uint32_t base = BarDroidRingWrite(allRenderModelData.data(), static_cast<uint32_t>(allRenderModelData.size()));
+		for (auto& cmd : submitCmds)
+			cmd.baseInstance += base;
+		if (bindUnbind)
+			Bind();
+		BarDroidPointInstances(true);
+		glMultiDrawElementsIndirect(mode, GL_UNSIGNED_INT, submitCmds.data(), submitCmds.size(), sizeof(SDrawElementsIndirectCommand));
+		if (bindUnbind)
+			Unbind();
+		modelDataToInstance.clear();
+		return;
+	}
+#endif
 	instVBO.Bind();
 #if defined(BARDROID_SIM) && !defined(HEADLESS)
 	if (BarDroidInstanceOrphan() >= 1)
@@ -538,6 +622,9 @@ void S3DModelVAO::Submit(GLenum mode, bool bindUnbind)
 
 	if (bindUnbind)
 		Bind();
+#if defined(BARDROID_SIM) && !defined(HEADLESS)
+	BarDroidPointInstances(false);
+#endif
 
 	glMultiDrawElementsIndirect(mode, GL_UNSIGNED_INT, submitCmds.data(), submitCmds.size(), sizeof(SDrawElementsIndirectCommand));
 
@@ -572,6 +659,18 @@ bool S3DModelVAO::SubmitImmediatelyImpl(const TObj* obj, uint32_t indexStart, ui
 	const uint32_t immediateBaseInstanceAbs = INSTANCE_BUFFER_NUM_BATCHED + immediateBaseInstance;
 
 	static SDrawElementsIndirectCommand scmd;
+#if defined(BARDROID_SIM) && !defined(HEADLESS)
+	if (BarDroidInstanceOrphan() == 3 && BarDroidRingReady()) {
+		scmd = { indexCount, 1, indexStart, 0u, BarDroidRingWrite(&instanceData, 1) };
+		if (bindUnbind)
+			Bind();
+		BarDroidPointInstances(true);
+		glMultiDrawElementsIndirect(mode, GL_UNSIGNED_INT, &scmd, 1u, sizeof(SDrawElementsIndirectCommand));
+		if (bindUnbind)
+			Unbind();
+		return true;
+	}
+#endif
 	scmd = {
 		indexCount,
 		1,
@@ -592,6 +691,9 @@ bool S3DModelVAO::SubmitImmediatelyImpl(const TObj* obj, uint32_t indexStart, ui
 
 	if (bindUnbind)
 		Bind();
+#if defined(BARDROID_SIM) && !defined(HEADLESS)
+	BarDroidPointInstances(false);
+#endif
 
 	// As of 01.05.2023 AMD Windows drivers do not support baseInstance field of SDrawElementsIndirectCommand
 	// therefore can't use glDrawElementsIndirect

@@ -124,6 +124,21 @@ private:
 	);
 	void EnableAttribs(bool inst) const;
 	void DisableAttribs() const;
+#if defined(BARDROID_SIM)
+	// BAR Droid (BarDroidInstanceOrphan 3): instance data written into a persistently mapped ring of two halves (no
+	// driver sync per write; a fence per half), the instance attribute pointed at the ring while it is in use
+	bool BarDroidRingReady();
+	uint32_t BarDroidRingWrite(const SInstanceData* data, uint32_t count);
+	void BarDroidPointInstances(bool ring);
+	static constexpr uint32_t BARDROID_RING_HALF = 1u << 17;
+	uint32_t barDroidRingBuf = 0;
+	uint8_t* barDroidRingPtr = nullptr;
+	uint32_t barDroidRingPos = 0;
+	uint32_t barDroidRingHalf = 0;
+	GLsync barDroidRingFence[2] = {};
+	bool barDroidRingFailed = false;
+	bool barDroidOnRing = false;
+#endif
 private:
 	static std::unique_ptr<S3DModelVAO> instance;
 private:
