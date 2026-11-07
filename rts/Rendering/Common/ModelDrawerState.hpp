@@ -197,5 +197,12 @@ private:
 	void DisableTextures() const override;
 private:
 	inline static const std::string PO_CLASS = "[ModelDrawer-GL4]";
+#ifdef BARDROID_SIM
+	// BAR Droid: the phone's model shaders (BarDroidModelShader 1-3), made when first asked for
+	Shader::IProgramObject* BarDroidShader(int mode, int idx) const;
+	void BarDroidSelectShader(bool deferredPass) const;
+	mutable std::array<std::array<Shader::IProgramObject*, MODEL_SHADER_COUNT>, 4> barDroidShaders = {};
+	mutable std::array<bool, 4> barDroidFailed = {};
+#endif
 };
 

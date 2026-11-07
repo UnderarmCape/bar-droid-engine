@@ -24,6 +24,44 @@
 
 #include "System/Misc/TracyDefs.h"
 
+#ifdef BARDROID_SIM
+#include "System/FileSystem/FileHandler.h"
+#include "System/Log/ILog.h"
+
+// BAR Droid (engine branch): a cheaper model shader for phones' GPUs (shaders/GLSL/Model*ProgGL4Mobile.glsl), the GL4
+// drawer's units, features and wreck pieces. Drawing only. Read every drawn frame, so a widget can switch it in a game
+// (Spring.SetConfigInt) to compare the two in the same heat. 2 and 3 are measurements (the fragment shader's header).
+CONFIG(int, BarDroidModelShader).defaultValue(0).minimumValue(0).maximumValue(3)
+	.description("BAR Droid: 1 = the phone's model shader (no reflection cubemap, cheaper light and interpolation); 2, 3 = measurements; 0 = the engine's own");
+
+static const char* barDroidModelVertSrc =
+#include "BarDroidModelShaders.vert.inc"
+;
+static const char* barDroidModelFragSrc =
+#include "BarDroidModelShaders.frag.inc"
+;
+
+static int BarDroidModelShaderMode()
+{
+	static uint32_t lastFrame = ~0u;
+	static int mode = 0;
+	if (globalRendering->drawFrame != lastFrame) {
+		lastFrame = globalRendering->drawFrame;
+		mode = configHandler->GetInt("BarDroidModelShader");
+	}
+	return mode;
+}
+
+// a file in the VFS first (the write dir's shaders/GLSL/, for trying changes without a build), else the copy built in
+static std::string BarDroidShaderSource(const char* file, const char* builtIn)
+{
+	if (CFileHandler::FileExists(std::string("shaders/GLSL/") + file, SPRING_VFS_RAW_FIRST)) {
+		LOG("[ModelDrawer-GL4] BAR Droid: model shader from shaders/GLSL/%s", file);
+		return std::string("GLSL/") + file;
+	}
+	return builtIn;
+}
+#endif
 
 
 bool IModelDrawerState::SetTeamColor(int team, float alpha) const
@@ -284,8 +322,62 @@ CModelDrawerStateGL4::~CModelDrawerStateGL4()
 	RECOIL_DETAILED_TRACY_ZONE;
 	modelShaders.fill(nullptr);
 	modelShader = nullptr;
+#ifdef BARDROID_SIM
+	for (auto& a : barDroidShaders) a.fill(nullptr);
+#endif
 	shaderHandler->ReleaseProgramObjects(PO_CLASS);
 }
+
+#ifdef BARDROID_SIM
+Shader::IProgramObject* CModelDrawerStateGL4::BarDroidShader(int mode, int n) const
+{
+	if (barDroidShaders[mode][n] != nullptr)
+		return barDroidShaders[mode][n];
+	if (barDroidFailed[mode])
+		return nullptr;
+
+	auto* sh = shaderHandler;
+	const std::string name = "ModelShaderGL4-BarDroid" + IntToString(mode) + "-" + IntToString(n);
+	Shader::IProgramObject* po = sh->CreateProgramObject(PO_CLASS, name);
+	po->AttachShaderObject(sh->CreateShaderObject(BarDroidShaderSource("ModelVertProgGL4Mobile.glsl", barDroidModelVertSrc), "", GL_VERTEX_SHADER));
+	po->AttachShaderObject(sh->CreateShaderObject(BarDroidShaderSource("ModelFragProgGL4Mobile.glsl", barDroidModelFragSrc), "", GL_FRAGMENT_SHADER));
+
+	po->SetFlag("BARDROID_MODEL_SHADER", mode);
+	po->SetFlag("USE_SHADOWS", int((n & 1) == 1));
+	po->SetFlag("DEFERRED_MODE", int(n >= MODEL_SHADER_NOSHADOW_DEFERRED));
+	po->SetFlag("GBUFFER_NORMTEX_IDX", GL::GeometryBuffer::ATTACHMENT_NORMTEX);
+	po->SetFlag("GBUFFER_DIFFTEX_IDX", GL::GeometryBuffer::ATTACHMENT_DIFFTEX);
+	po->SetFlag("GBUFFER_SPECTEX_IDX", GL::GeometryBuffer::ATTACHMENT_SPECTEX);
+	po->SetFlag("GBUFFER_EMITTEX_IDX", GL::GeometryBuffer::ATTACHMENT_EMITTEX);
+	po->SetFlag("GBUFFER_MISCTEX_IDX", GL::GeometryBuffer::ATTACHMENT_MISCTEX);
+	po->SetFlag("GBUFFER_ZVALTEX_IDX", GL::GeometryBuffer::ATTACHMENT_ZVALTEX);
+	po->SetFlag("MATMODE_STATIC", static_cast<int>(ShaderMatrixModes::STATIC_MATMODE));
+	po->SetFlag("MATMODE_ARRAY",  static_cast<int>(ShaderMatrixModes::ARRAY_MATMODE));
+
+	po->Link();
+	po->Enable();
+	po->Disable();
+	po->Validate();
+
+	if (!po->IsValid()) {
+		LOG_L(L_ERROR, "[ModelDrawer-GL4] BAR Droid: model shader %d (%s) did not compile, the engine's own instead:\n%s",
+			mode, name.c_str(), po->GetLog().c_str());
+		barDroidFailed[mode] = true;
+		return nullptr;
+	}
+	LOG("[ModelDrawer-GL4] BAR Droid: model shader %d made (%s)", mode, name.c_str());
+	return (barDroidShaders[mode][n] = po);
+}
+
+void CModelDrawerStateGL4::BarDroidSelectShader(bool deferredPass) const
+{
+	const int mode = BarDroidModelShaderMode();
+	if (mode <= 0 || mode > 3)
+		return;
+	if (auto* po = BarDroidShader(mode, shadowHandler.ShadowsLoaded() + deferredPass * 2); po != nullptr)
+		modelShader = po;
+}
+#endif
 
 bool CModelDrawerStateGL4::CanEnable() const { return globalRendering->haveGL4; }
 bool CModelDrawerStateGL4::CanDrawDeferred() const { return CModelDrawerConcept::DeferredAllowed(); }
@@ -311,8 +403,28 @@ void CModelDrawerStateGL4::Enable(bool deferredPass, bool alphaPass) const
 	CModelDrawerHelper::EnableTexturesCommon();
 
 	SetActiveShader(shadowHandler.ShadowsLoaded(), deferredPass);
+#ifdef BARDROID_SIM
+	BarDroidSelectShader(deferredPass);
+#endif
 	assert(modelShader != nullptr);
 	modelShader->Enable();
+#ifdef BARDROID_SIM
+	// (the matrix and shading modes as the drawer has them: another program may have been the one in use meanwhile)
+	modelShader->SetUniform("matrixMode", static_cast<int>(smm));
+	modelShader->SetUniform("shadingMode", static_cast<int>(ssm));
+	if (modelShader != modelShaders[shadowHandler.ShadowsLoaded() + deferredPass * 2]) {
+		const float4& sd = ISky::GetSky()->GetLight()->GetLightDir();
+		const float3 sun = float3(sd.x, sd.y, sd.z).SafeNormalize();
+		const float3 fog = ISky::GetSky()->fogColor;
+		// the ground the reflection's lower half shows: the map's sunlit ground at a middling albedo
+		const float lit = std::max(sun.y, 0.0f);
+		const float4& ga = sunLighting->groundAmbientColor;
+		const float4& gd = sunLighting->groundDiffuseColor;
+		modelShader->SetUniform("sunDirN", sun.x, sun.y, sun.z);
+		modelShader->SetUniform("reflSkyTint", fog.x, fog.y, fog.z);
+		modelShader->SetUniform("reflGroundTint", (ga.x + gd.x * lit) * 0.4f, (ga.y + gd.y * lit) * 0.4f, (ga.z + gd.z * lit) * 0.4f);
+	}
+#endif
 
 	switch (game->GetDrawMode())
 	{
