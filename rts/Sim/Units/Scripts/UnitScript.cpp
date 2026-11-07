@@ -192,6 +192,62 @@ bool CUnitScript::DoSpin(float& cur, float dest, float& speed, float accel, int 
 	return false;
 }
 
+#ifdef BARDROID_SIM
+void CUnitScript::BarDroidPrefetchArrays() const
+{
+	BARDROID_PREFETCH(anims.data());
+	if (anims.size() > 2)
+		BARDROID_PREFETCH(reinterpret_cast<const char*>(anims.data()) + 64);
+
+	BARDROID_PREFETCH(pieces.data());
+	BARDROID_PREFETCH(rootPiece);
+
+	// (the model's flags: SetDirty's range and stale flag, the walk's range)
+	if (unit != nullptr)
+		BARDROID_PREFETCH(&unit->localModel.barDroidPrevStale);
+}
+
+void CUnitScript::BarDroidPrefetchPieces() const
+{
+	const size_t numAnims = std::min(anims.size(), size_t(8));
+
+	for (size_t k = 0; k < numAnims; ++k) {
+		const size_t pieceIdx = static_cast<size_t>(anims[k].piece);
+
+		if (pieceIdx >= pieces.size() || pieces[pieceIdx] == nullptr)
+			continue;
+
+		const LocalModelPiece* lmp = pieces[pieceIdx];
+		BARDROID_PREFETCH(&lmp->GetRotation());
+		BARDROID_PREFETCH(&lmp->blockScriptAnims);
+		BARDROID_PREFETCH(&lmp->localModel);
+	}
+}
+
+void CUnitScript::BarDroidPrefetchModelPieces() const
+{
+	const size_t numAnims = std::min(anims.size(), size_t(8));
+
+	for (size_t k = 0; k < numAnims; ++k) {
+		const size_t pieceIdx = static_cast<size_t>(anims[k].piece);
+
+		if (pieceIdx >= pieces.size() || pieces[pieceIdx] == nullptr)
+			continue;
+
+		const LocalModelPiece* lmp = pieces[pieceIdx];
+
+		if (lmp->original != nullptr)
+			BARDROID_PREFETCH(&lmp->original->bakedTransform);
+
+		BARDROID_PREFETCH(lmp->children.data());
+
+		// (the first child: pre-order, the next piece of the model; SetDirty reads its flag)
+		if (lmp->bdLastDesc > lmp->lmodelPieceIndex)
+			BARDROID_PREFETCH(&(lmp + 1)->GetRotation());
+	}
+}
+#endif
+
 /**
  * @brief The multithreaded first half of the original CUnitScript::Tick function first does the heavy lifting of calculating all
 			  new piece positions according to the animations
@@ -261,7 +317,9 @@ void CUnitScript::TickAllAnims(int deltaTime)
 	// exactly (a piece's transform comes from its parent's alone; SetDirty marks a piece's whole subtree), without
 	// pushing a copy of a transform for every piece of every animating unit every frame (2026-11-07: the walk was most
 	// of TickAllAnims, ~5 % of the engine's CPU in a late 8v8).
-	if (rootPiece->localModel != nullptr && !rootPiece->localModel->pieces.empty() && &rootPiece->localModel->pieces[0] == rootPiece) {
+	// (only while the array is the tree's pre-order: Spring.SetUnitPieceParent can put a child before its new parent,
+	// and then its transform would come from the parent's old one; LocalModel::barDroidPreOrder)
+	if (rootPiece->localModel != nullptr && !rootPiece->localModel->pieces.empty() && &rootPiece->localModel->pieces[0] == rootPiece && rootPiece->localModel->barDroidPreOrder) {
 		LocalModel* lm = rootPiece->localModel;
 		auto& lmPieces = lm->pieces;
 

@@ -34,16 +34,20 @@ CONFIG(bool, BarDroidCobDispatch).defaultValue(true).description("BAR Droid: the
 CONFIG(bool, BarDroidWeaponPrefetch).defaultValue(true).description("BAR Droid: memory prefetch hints a few units ahead in the units' weapon loops (UpdateWeaponVectors, UpdateWeapons)");
 CONFIG(bool, BarDroidLosStatePrefetch).defaultValue(true).description("BAR Droid: memory prefetch hints a few units ahead in the units' LOS status loops");
 
+CONFIG(bool, BarDroidUnitsAll).defaultValue(true).description("BAR Droid: 0 turns every switch above off at once (the stock unit scripts, weapons and LOS); 1: each as set");
+
 void BarDroidUnits::ReadConfig()
 {
-	animPrefetch     = configHandler->GetBool("BarDroidAnimPrefetch");
-	animDispatch     = configHandler->GetBool("BarDroidAnimDispatch");
-	animDirtyRange   = configHandler->GetBool("BarDroidAnimDirtyRange");
-	pieceTrigCache   = configHandler->GetBool("BarDroidPieceTrigCache");
-	losGather        = configHandler->GetBool("BarDroidLosGather");
-	cobDispatch      = configHandler->GetBool("BarDroidCobDispatch");
-	weaponPrefetch   = configHandler->GetBool("BarDroidWeaponPrefetch");
-	losStatePrefetch = configHandler->GetBool("BarDroidLosStatePrefetch");
+	const bool all = configHandler->GetBool("BarDroidUnitsAll");
+
+	animPrefetch     = all && configHandler->GetBool("BarDroidAnimPrefetch");
+	animDispatch     = all && configHandler->GetBool("BarDroidAnimDispatch");
+	animDirtyRange   = all && configHandler->GetBool("BarDroidAnimDirtyRange");
+	pieceTrigCache   = all && configHandler->GetBool("BarDroidPieceTrigCache");
+	losGather        = all && configHandler->GetBool("BarDroidLosGather");
+	cobDispatch      = all && configHandler->GetBool("BarDroidCobDispatch");
+	weaponPrefetch   = all && configHandler->GetBool("BarDroidWeaponPrefetch");
+	losStatePrefetch = all && configHandler->GetBool("BarDroidLosStatePrefetch");
 }
 #endif
 
@@ -178,21 +182,28 @@ void CUnitScriptEngine::Tick(int deltaTime)
 #ifdef BARDROID_SIM
 		if (BarDroidUnits::animPrefetch) {
 			// BAR Droid (BarDroidAnimPrefetch): the same TickAllAnims for every animating script (each one touches
-			// only its own script and model, so which thread ran which never mattered), in blocks of 32 a thread takes
-			// at once, with prefetch hints inside the block a few scripts ahead: the script object three ahead, its
-			// anim list and piece table two ahead, the pieces its anims turn or move one ahead. The step mostly waited
-			// on memory there (simpleperf, late 8v8, 2026-11-07: the loads of the script, its anims and pieces).
-			static constexpr int BLOCK = 32;
+			// only its own script and model, so which thread ran which never mattered), in blocks of 64 a thread takes
+			// at once, with prefetch hints inside the block along the loads TickAllAnims makes: the script object six
+			// ahead, its anim list, piece table and model flags four ahead, the pieces its anims turn or move two
+			// ahead, their model pieces and children one ahead. The step mostly waited on memory there (simpleperf by
+			// source line, late 8v8, 2026-11-07: the script, its anims, the pieces, SetDirty's children); a script
+			// with one spin anim takes far less than a load from memory, hence the distances.
+			static constexpr int BLOCK = 64;
 			const int numAnimating = animating.size();
 
 			for_mt(0, (numAnimating + BLOCK - 1) / BLOCK, [&](const int block) {
 				const int beg = block * BLOCK;
 				const int end = std::min(numAnimating, beg + BLOCK);
 
+				// (the block's first objects, which no earlier step hinted)
+				for (int k = beg; k < std::min(end, beg + 6); ++k)
+					animating[k]->BarDroidPrefetchObject();
+
 				for (int i = beg; i < end; ++i) {
-					if (i + 3 < end) animating[i + 3]->BarDroidPrefetchObject();
-					if (i + 2 < end) animating[i + 2]->BarDroidPrefetchArrays();
-					if (i + 1 < end) animating[i + 1]->BarDroidPrefetchPieces();
+					if (i + 6 < end) animating[i + 6]->BarDroidPrefetchObject();
+					if (i + 4 < end) animating[i + 4]->BarDroidPrefetchArrays();
+					if (i + 2 < end) animating[i + 2]->BarDroidPrefetchPieces();
+					if (i + 1 < end) animating[i + 1]->BarDroidPrefetchModelPieces();
 
 					animating[i]->TickAllAnims(deltaTime);
 				}

@@ -83,24 +83,44 @@ LocalModelPiece::~LocalModelPiece()
 #ifdef BARDROID_SIM
 // (LocalModel::barDroidPrevStale: this piece's transform will change or did)
 #define BARDROID_PREV_STALE() do { if (localModel != nullptr) localModel->barDroidPrevStale = true; } while (false)
-// (LocalModel's dirty range: this piece is dirty now)
-#define BARDROID_DIRTY_RANGE() do { if (localModel != nullptr) localModel->BarDroidMarkDirty(lmodelPieceIndex); } while (false)
 #else
 #define BARDROID_PREV_STALE() do {} while (false)
-#define BARDROID_DIRTY_RANGE() do {} while (false)
 #endif
 
 void LocalModelPiece::SetDirty() {
 	RECOIL_DETAILED_TRACY_ZONE;
+#ifdef BARDROID_SIM
+	// BAR Droid: the model's flags once for the whole call (every piece the recursion below marks belongs to this
+	// model and lies in this piece's subtree, [lmodelPieceIndex, bdLastDesc]: BarDroidAnimDirtyRange), then the
+	// stock recursion without them (2026-11-07: a load of the model's range for every piece marked made this the
+	// animations' slowest part)
+	if (localModel != nullptr) {
+		localModel->barDroidPrevStale = true;
+		// (a changed tree's subtrees are no runs of indices: everything)
+		localModel->BarDroidMarkDirty(lmodelPieceIndex, localModel->barDroidPreOrder ? bdLastDesc : -1);
+	}
+
+	SetDirtySubtree();
+}
+
+void LocalModelPiece::SetDirtySubtree() {
+	dirty = true;
+
+	for (LocalModelPiece* child: children) {
+		if (child->dirty)
+			continue;
+		child->SetDirtySubtree();
+	}
+#else
 	dirty = true;
 	BARDROID_PREV_STALE();
-	BARDROID_DIRTY_RANGE();
 
 	for (LocalModelPiece* child: children) {
 		if (child->dirty)
 			continue;
 		child->SetDirty();
 	}
+#endif
 }
 
 void LocalModelPiece::SetFloat3(const float3& src, float3& dst) {
