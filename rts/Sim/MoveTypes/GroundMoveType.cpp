@@ -1250,6 +1250,14 @@ bool CGroundMoveType::FollowPath(int thread)
 		event.deltaHeading = GetHeadingFromVector(modWantedDir.x, modWantedDir.z);
 		event.changed = true;
 		// setHeadingDir = GetHeadingFromVector(modWantedDir.x, modWantedDir.z);
+#ifdef BARDROID_SIM
+		// BAR Droid (BarDroidMoveParallelHeading): ChangeHeading calls the unit script only if |delta| >=
+		// minScriptChangeHeading, and |delta| <= trunc(turnRate) (GetDeltaHeading clamps to +-turnRate); a turn rate
+		// below it can never reach the script (the stock default is 32767). Any other unit makes this frame's
+		// heading changes run the stock serial way.
+		if (!(turnRate > 0.0f && turnRate < float(minScriptChangeHeading)))
+			BarDroidMove::headingNeedsSerial.store(true, std::memory_order_relaxed);
+#endif
 
 
 		#ifdef PATHING_DEBUG
@@ -3792,6 +3800,19 @@ void CGroundMoveType::BarDroidUpdateRecorded()
 #else
 	barDroidMoved = Update();
 #endif
+}
+
+void CGroundMoveType::BarDroidChangeHeadingRecorded(short newHeading)
+{
+#ifdef SYNCCHECK
+	barDroidSyncRecord.clear();
+	CSyncChecker::BarDroidSetRecorder(&barDroidSyncRecord);
+	ChangeHeading(newHeading);
+	CSyncChecker::BarDroidSetRecorder(nullptr);
+#else
+	ChangeHeading(newHeading);
+#endif
+	barDroidMoved = false;
 }
 
 bool CGroundMoveType::BarDroidReplayRecorded()

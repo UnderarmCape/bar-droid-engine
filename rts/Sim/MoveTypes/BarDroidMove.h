@@ -3,6 +3,8 @@
 #pragma once
 
 #ifdef BARDROID_SIM
+#include <atomic>
+
 class CUnit;
 
 // BAR Droid (engine branch bardroid/move): unit movement and collision speed-ups. Each one is exact: the same objects
@@ -39,6 +41,11 @@ namespace BarDroidMove {
 	// BarDroidMoveParallelUpdate: GroundMoveSystem's stage 5 (each ground unit's final Update) on every thread, each
 	// unit's synced writes recorded and hashed afterwards in the stock order (CSyncChecker::BarDroidReplay).
 	extern bool parallelUpdate;
+	// BarDroidMoveParallelHeading: the heading changes (stage 2, ChangeHeadingEvent) the same way, in frames where no
+	// unit's ChangeHeading can call its unit script (headingNeedsSerial, set by FollowPath in stage 1 for a unit whose
+	// turn rate could reach minScriptChangeHeading); otherwise that frame runs the stock loop.
+	extern bool parallelHeading;
+	extern std::atomic<bool> headingNeedsSerial;
 
 	void ReadConfig();
 
