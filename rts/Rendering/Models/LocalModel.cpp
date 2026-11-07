@@ -54,6 +54,12 @@ void LocalModel::SetModel(const S3DModel* model, bool initialize)
 	assert(model != nullptr);
 	assert(model->numPieces >= 1);
 
+#ifdef BARDROID_SIM
+	// (BarDroidAnimDirtyRange: new or reloaded pieces; any of them may be dirty)
+	barDroidDirtyLo = 0;
+	barDroidDirtyHi = INT32_MAX - 1;
+#endif
+
 	if (!initialize) {
 		assert(pieces.size() == model->numPieces);
 

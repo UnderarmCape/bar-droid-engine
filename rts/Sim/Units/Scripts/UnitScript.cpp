@@ -225,8 +225,26 @@ void CUnitScript::TickAllAnims(int deltaTime)
 
 	for (auto& ai : anims) {
 		LocalModelPiece& lmp = *pieces[ai.piece];
+#if defined(BARDROID_SIM)
+		// BAR Droid (BarDroidAnimDispatch): the anim's own step called directly (the compiler can inline it), the
+		// same function the table below holds for its type; any other type goes through the table as before
+		bool stepDone;
+		if (BarDroidUnits::animDispatch) {
+			switch (ai.animType) {
+				case ATurn : { stepDone = TickTurnAnim (tickRate, lmp, ai); } break;
+				case ASpin : { stepDone = TickSpinAnim (tickRate, lmp, ai); } break;
+				case AMove : { stepDone = TickMoveAnim (tickRate, lmp, ai); } break;
+				case AScale: { stepDone = TickScaleAnim(tickRate, lmp, ai); } break;
+				default    : { stepDone = std::invoke(TICK_ANIM_FUNCS[ai.animType], this, tickRate, lmp, ai); } break;
+			}
+		} else {
+			stepDone = std::invoke(TICK_ANIM_FUNCS[ai.animType], this, tickRate, lmp, ai);
+		}
+		if ((ai.done |= stepDone)) {
+#else
 		const auto& currFunc = TICK_ANIM_FUNCS[ai.animType];
 		if ((ai.done |= std::invoke(currFunc, this, tickRate, lmp, ai))) {
+#endif
 			if (ai.hasWaiting)
 				doneAnims.emplace_back(ai);
 		}
@@ -244,7 +262,23 @@ void CUnitScript::TickAllAnims(int deltaTime)
 	// pushing a copy of a transform for every piece of every animating unit every frame (2026-11-07: the walk was most
 	// of TickAllAnims, ~5 % of the engine's CPU in a late 8v8).
 	if (rootPiece->localModel != nullptr && !rootPiece->localModel->pieces.empty() && &rootPiece->localModel->pieces[0] == rootPiece) {
-		for (LocalModelPiece& lmp: rootPiece->localModel->pieces) {
+		LocalModel* lm = rootPiece->localModel;
+		auto& lmPieces = lm->pieces;
+
+		// BAR Droid (BarDroidAnimDirtyRange): only the index range the model's dirty pieces lie in (LocalModel keeps
+		// it: every piece marked dirty since the last walk is inside it; the pieces outside are clean, which the walk
+		// would skip anyway)
+		size_t walkBeg = 0;
+		size_t walkEnd = lmPieces.size();
+
+		if (BarDroidUnits::animDirtyRange) {
+			walkBeg = std::min(lm->BarDroidDirtyBegin(), walkEnd);
+			walkEnd = std::min(lm->BarDroidDirtyEnd(), walkEnd);
+		}
+
+		for (size_t n = walkBeg; n < walkEnd; ++n) {
+			LocalModelPiece& lmp = lmPieces[n];
+
 			if (!lmp.GetDirty())
 				continue;
 
@@ -253,6 +287,9 @@ void CUnitScript::TickAllAnims(int deltaTime)
 			lmp.UpdatePieceSpaceTransform();
 			lmp.UpdateModelSpaceTransform((lmp.parent != nullptr) ? lmp.parent->GetModelSpaceTransformRaw() : Transform{});
 		}
+
+		// no piece of the model is dirty now (every dirty one was in the range, and the walk cleaned it)
+		lm->BarDroidClearDirtyRange();
 		return;
 	}
 	// the pieces walked depth-first from a stack kept per thread (this runs on the worker threads), not breadth-first

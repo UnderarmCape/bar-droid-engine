@@ -51,6 +51,12 @@ public:
 	static CQuaternion FromEulerYPRNeg(const float3& angles) { return FromEulerYPR(-angles); };
 	// Euler angles, also known as RotateEulerYXZ
 	static CQuaternion FromEulerYPR(const float3& angles);
+#ifdef BARDROID_SIM
+	// BAR Droid (BarDroidPieceTrigCache): FromEulerYPR's parts. HalfAngleSinCos gives its math::sin and math::cos of
+	// angle * 0.5f; FromEulerYPRSinCos composes the quaternion from the six (index a = angles[a]) as FromEulerYPR does
+	static void BarDroidHalfAngleSinCos(float angle, float& s, float& c);
+	static CQuaternion BarDroidFromEulerYPRSinCos(const float* halfSin, const float* halfCos);
+#endif
 
 	// To Euler angles, YPR/YXZ order
 	float3 ToEulerYPR() const;

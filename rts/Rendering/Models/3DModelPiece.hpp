@@ -78,6 +78,11 @@ public:
 	}
 
 	Transform ComposeTransform(const float3& t, const float3& r, float s) const;
+#ifdef BARDROID_SIM
+	// BAR Droid (BarDroidPieceTrigCache): ComposeTransform(t, r, s) with FromEulerYPRNeg(-r)'s half-angle sines and
+	// cosines given (halfSin[a] = math::sin(r[a] * 0.5f), halfCos[a] = math::cos(r[a] * 0.5f)): the same operations
+	Transform BarDroidComposeTransform(const float3& t, const float* halfSin, const float* halfCos, float s) const;
+#endif
 
 	void SetCollisionVolume(const CollisionVolume& cv) { colvol = cv; }
 	const CollisionVolume* GetCollisionVolume() const { return &colvol; }

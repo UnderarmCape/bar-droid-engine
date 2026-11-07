@@ -219,6 +219,21 @@ Transform S3DModelPiece::ComposeTransform(const float3& t, const float3& r, floa
 	return tra;
 }
 
+#ifdef BARDROID_SIM
+Transform S3DModelPiece::BarDroidComposeTransform(const float3& t, const float* halfSin, const float* halfCos, float s) const
+{
+	// ComposeTransform above, line for line; only the quaternion's sines and cosines come in computed
+	Transform tra;
+	tra.t = t;
+
+	if (bakedTransform.has_value())
+		tra *= bakedTransform.value();
+
+	tra *= Transform(CQuaternion::BarDroidFromEulerYPRSinCos(halfSin, halfCos), ZeroVector, s);
+	return tra;
+}
+#endif
+
 
 void S3DModelPiece::PostProcessGeometry(uint32_t pieceIndex)
 {
