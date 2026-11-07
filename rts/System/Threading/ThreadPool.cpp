@@ -132,6 +132,9 @@ static int GetDefaultNumWorkers() {
 // FIXME: mutex/atomic?
 // NOTE: +1 because we also count the main thread, workers start at 1
 int GetNumThreads() { return (workerThreads[false].size() + 1); }
+#ifdef BARDROID_SIM
+int barDroidForGrain = 64;
+#endif
 int GetMaxThreads() { return std::min(MAX_THREADS, Threading::GetLogicalCpuCores()); }
 
 bool HasThreads() { return !workerThreads[false].empty(); }

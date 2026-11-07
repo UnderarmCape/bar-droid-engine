@@ -134,6 +134,11 @@ namespace ThreadPool {
 	bool HasThreads();
 	int GetMaxThreads();
 	int GetNumThreads();
+#ifdef BARDROID_SIM
+	// BAR Droid: the most indices a for_mt fetch takes at once (BarDroidForGrain, refreshed once a simulation frame by
+	// CUnitHandler::UpdatePreFrame; 0 or 1: one at a time, as stock)
+	extern int barDroidForGrain;
+#endif
 	void NotifyWorkerThreads(bool force, bool async);
 
 	static constexpr int MAX_THREADS = 32;
@@ -710,11 +715,36 @@ public:
 		this->to   = to;
 		this->step = step;
 		this->func = func;
+#ifdef BARDROID_SIM
+		// BAR Droid: each fetch takes a block of indices (about eight blocks a thread, at most BarDroidForGrain), not
+		// one: two contended atomics per index (this counter and remainingTasks) were most of the cost of loops with
+		// little work an index (the projectiles' draw flags, the unit scripts' animations). Each index is still run
+		// once by one thread; which thread runs which was never fixed. 0: one at a time, as stock.
+		const int total = remainingTasks.load(std::memory_order_relaxed);
+		const int maxGrain = ThreadPool::barDroidForGrain;
+		grain = (maxGrain <= 1) ? 1 : std::clamp(total / (ThreadPool::GetNumThreads() * 8), 1, maxGrain);
+#endif
 	}
 
 	bool IsSliceTask() const override { return true; }
 	bool ExecuteStep(int tid) override
 	{
+#ifdef BARDROID_SIM
+		if (grain > 1) {
+			const int k = ctr.fetch_add(grain, std::memory_order_relaxed);
+			int i = from + (step * k);
+
+			if (i >= to)
+				return false;
+
+			int n = 0;
+			for (; n < grain && i < to; ++n, i += step) {
+				func(i);
+			}
+			remainingTasks -= n;
+			return true;
+		}
+#endif
 		const int i = from + (step * ctr.fetch_add(1, std::memory_order_relaxed));
 
 		if (i < to) {
@@ -728,6 +758,9 @@ public:
 
 protected:
 	std::atomic<int> ctr;
+#ifdef BARDROID_SIM
+	int grain = 1;
+#endif
 	std::function<void(const int)> func;
 
 	int from;

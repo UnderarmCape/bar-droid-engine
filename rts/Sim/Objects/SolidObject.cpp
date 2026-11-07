@@ -15,10 +15,17 @@
 #include "System/Misc/TracyDefs.h"
 #ifdef BARDROID_SIM
 #include "System/Config/ConfigHandler.h"
+#include "System/Threading/ThreadPool.h"
 
 CONFIG(bool, BarDroidPrevSkip).defaultValue(true).description("BAR Droid: a model's previous-frame piece transforms (drawing's interpolation) copied only when one of its pieces changed since the last copy; 0: every frame, as stock");
+// BAR Droid: ThreadPool.h's for_mt block size (System has no config of its own to read it per frame)
+CONFIG(int, BarDroidForGrain).defaultValue(64).minimumValue(0).maximumValue(1024).description("BAR Droid: the most indices one for_mt fetch takes (about eight blocks a thread); 0 or 1: one at a time, as stock");
 bool CSolidObject::barDroidPrevSkip = true;
-void CSolidObject::BarDroidReadPrevSkip() { barDroidPrevSkip = configHandler->GetBool("BarDroidPrevSkip"); }
+void CSolidObject::BarDroidReadPrevSkip()
+{
+	barDroidPrevSkip = configHandler->GetBool("BarDroidPrevSkip");
+	ThreadPool::barDroidForGrain = configHandler->GetInt("BarDroidForGrain");
+}
 #endif
 
 int CSolidObject::deletingRefID = -1;
