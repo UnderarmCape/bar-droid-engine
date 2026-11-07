@@ -70,10 +70,9 @@ uniform vec4 alphaCtrl = vec4(0.0, 0.0, 0.0, 1.0); //always pass
 uniform vec4 colorMult = vec4(1.0);
 uniform vec4 nanoColor = vec4(0.0);
 
-// the reflection's tint: the sky above the horizon (the fog's colour, which BAR's maps keep near the sky's), the
-// ground below it (the map's sunlit ground at a middling albedo)
-uniform vec3 reflSkyTint = vec3(0.55, 0.65, 0.75);
-uniform vec3 reflGroundTint = vec3(0.25, 0.24, 0.22);
+// the reflection: the engine's reflection cubemap's mean colour per face (+x -x +y -y +z -z; its smallest mipmap
+// level, read back on the CPU), blended by the reflected ray's direction (an "ambient cube": no texture read)
+uniform vec3 reflCube[6] = vec3[6](vec3(0.45), vec3(0.45), vec3(0.6), vec3(0.3), vec3(0.45), vec3(0.45));
 uniform vec3 sunDirN = vec3(0.0, 0.447214, 0.894427); // the sun's direction, normalized on the CPU
 
 bool AlphaDiscard(float a) {
@@ -120,9 +119,13 @@ void main()
 		float NdotL = clamp(dot(N, L), 0.0, 1.0);
 		float HdotN = clamp(dot(N, H), 0.0, 1.0);
 
-		// the reflected ray's height: R = 2 (N.V) N - V
-		float Ry = 2.0 * NdotV * N.y - V.y;
-		vec3 reflColor = mix(reflGroundTint, reflSkyTint, smoothstep(-0.25, 0.35, Ry));
+		// the reflected ray R = 2 (N.V) N - V (unit length), each axis' face weighted by its square
+		vec3 R = 2.0 * NdotV * N - V;
+		vec3 R2 = R * R;
+		vec3 reflColor =
+			R2.x * ((R.x >= 0.0) ? reflCube[0] : reflCube[1]) +
+			R2.y * ((R.y >= 0.0) ? reflCube[2] : reflCube[3]) +
+			R2.z * ((R.z >= 0.0) ? reflCube[4] : reflCube[5]);
 
 		#if (USE_SHADOWS == 1)
 			vec3 shadowCoord = shadowVertexPos.xyz / shadowVertexPos.w;

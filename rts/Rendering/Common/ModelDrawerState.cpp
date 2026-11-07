@@ -30,9 +30,9 @@
 
 // BAR Droid (engine branch): a cheaper model shader for phones' GPUs (shaders/GLSL/Model*ProgGL4Mobile.glsl), the GL4
 // drawer's units, features and wreck pieces. Drawing only. Read every drawn frame, so a widget can switch it in a game
-// (Spring.SetConfigInt) to compare the two in the same heat. 2 and 3 are measurements (the fragment shader's header).
-CONFIG(int, BarDroidModelShader).defaultValue(0).minimumValue(0).maximumValue(3)
-	.description("BAR Droid: 1 = the phone's model shader (no reflection cubemap, cheaper light and interpolation); 2, 3 = measurements; 0 = the engine's own");
+// (Spring.SetConfigInt) to compare the two in the same heat. 2-4 are measurements (the shaders' headers).
+CONFIG(int, BarDroidModelShader).defaultValue(0).minimumValue(0).maximumValue(4)
+	.description("BAR Droid: 1 = the phone's model shader (no reflection cubemap, cheaper light and interpolation); 2-4 = measurements; 0 = the engine's own");
 
 static const char* barDroidModelVertSrc =
 #include "BarDroidModelShaders.vert.inc"
@@ -372,7 +372,7 @@ Shader::IProgramObject* CModelDrawerStateGL4::BarDroidShader(int mode, int n) co
 void CModelDrawerStateGL4::BarDroidSelectShader(bool deferredPass) const
 {
 	const int mode = BarDroidModelShaderMode();
-	if (mode <= 0 || mode > 3)
+	if (mode <= 0 || mode > 4)
 		return;
 	if (auto* po = BarDroidShader(mode, shadowHandler.ShadowsLoaded() + deferredPass * 2); po != nullptr)
 		modelShader = po;
@@ -415,14 +415,22 @@ void CModelDrawerStateGL4::Enable(bool deferredPass, bool alphaPass) const
 	if (modelShader != modelShaders[shadowHandler.ShadowsLoaded() + deferredPass * 2]) {
 		const float4& sd = ISky::GetSky()->GetLight()->GetLightDir();
 		const float3 sun = float3(sd.x, sd.y, sd.z).SafeNormalize();
-		const float3 fog = ISky::GetSky()->fogColor;
-		// the ground the reflection's lower half shows: the map's sunlit ground at a middling albedo
-		const float lit = std::max(sun.y, 0.0f);
-		const float4& ga = sunLighting->groundAmbientColor;
-		const float4& gd = sunLighting->groundDiffuseColor;
 		modelShader->SetUniform("sunDirN", sun.x, sun.y, sun.z);
-		modelShader->SetUniform("reflSkyTint", fog.x, fog.y, fog.z);
-		modelShader->SetUniform("reflGroundTint", (ga.x + gd.x * lit) * 0.4f, (ga.y + gd.y * lit) * 0.4f, (ga.z + gd.z * lit) * 0.4f);
+		// the reflection cubemap's mean colours; until the first read arrives: the fog's colour above, the map's
+		// sunlit ground at a middling albedo below, half of each at the sides
+		float cube[18];
+		if (!cubeMapHandler.BarDroidAmbientCube(cube)) {
+			const float3 fog = ISky::GetSky()->fogColor;
+			const float lit = std::max(sun.y, 0.0f);
+			const float4& ga = sunLighting->groundAmbientColor;
+			const float4& gd = sunLighting->groundDiffuseColor;
+			const float3 ground = float3(ga.x + gd.x * lit, ga.y + gd.y * lit, ga.z + gd.z * lit) * 0.4f;
+			for (int f = 0; f < 6; f++) {
+				const float3 c = (f == 2) ? fog : (f == 3) ? ground : (fog + ground) * 0.5f;
+				cube[f * 3 + 0] = c.x; cube[f * 3 + 1] = c.y; cube[f * 3 + 2] = c.z;
+			}
+		}
+		modelShader->SetUniform3v("reflCube", 6, &cube[0]);
 	}
 #endif
 

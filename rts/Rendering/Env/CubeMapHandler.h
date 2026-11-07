@@ -21,7 +21,22 @@ public:
 	unsigned int GetReflectionTextureSize() const { return reflTexSize; }
 	unsigned int GetSpecularTextureSize() const { return specTexSize; }
 
+#ifdef BARDROID_SIM
+	// BAR Droid: the env reflection cubemap's mean colour per face (+x -x +y -y +z -z, rgb), from its smallest mipmap
+	// level read back (without waiting) once a whole cube is renewed, for the phone's model shader (BarDroidModelShader),
+	// which reads no cubemap; asked for by it, false until the first read arrived or without the cube's mipmaps
+	bool BarDroidAmbientCube(float rgb[18]);
+#endif
+
 private:
+#ifdef BARDROID_SIM
+	void BarDroidReadAmbient();
+	float barDroidAmbient[18] = {};
+	bool barDroidAmbientReady = false;
+	bool barDroidAmbientWanted = false;
+	unsigned int barDroidPbo = 0;
+	GLsync barDroidFence = nullptr;
+#endif
 	void CreateReflectionFace(unsigned int, bool);
 	void CreateSpecularFacePart(unsigned int, unsigned int, const float3&, const float3&, const float3&, unsigned int, unsigned char*);
 	void CreateSpecularFace(unsigned int, unsigned int, const float3&, const float3&, const float3&);

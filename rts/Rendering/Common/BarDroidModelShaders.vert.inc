@@ -157,7 +157,11 @@ Transform InvertTransformAffine(Transform tra) {
 }
 
 // between two simulated frames a piece turns by little: a normalized lerp (the shorter way round)
+// (BARDROID_MODEL_SHADER 4, a measurement: no blend, the last simulated frame's transform)
 Transform Lerp(Transform t0, Transform t1, float a) {
+#if (BARDROID_MODEL_SHADER == 4)
+	return t1;
+#endif
 	a = clamp(a, 0.0, 1.0);
 	vec4 q1 = (dot(t0.quat, t1.quat) < 0.0) ? -t1.quat : t1.quat;
 	return Transform(normalize(mix(t0.quat, q1, a)), mix(t0.trSc, t1.trSc, a));
