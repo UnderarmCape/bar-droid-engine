@@ -86,6 +86,12 @@ private:
 
 public:
 	std::vector<LocalModelPiece> pieces;
+#ifdef BARDROID_SIM
+	// BAR Droid: a piece of this model was marked dirty or had its model-space transform computed since the last
+	// CSolidObject::UpdatePrevFrameTransform (LocalModelPiece sets it); while false every piece's prevModelSpaceTra
+	// already equals its modelSpaceTra and none is dirty, so that copy can be left out. Drawing-only data.
+	mutable bool barDroidPrevStale = true;
+#endif
 
 private:
 	// object-oriented box; accounts for piece movement

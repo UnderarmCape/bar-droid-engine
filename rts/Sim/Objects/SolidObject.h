@@ -188,6 +188,11 @@ public:
 
 	void CondUpdatePrevTransform();
 	void UpdatePrevFrameTransform();
+#ifdef BARDROID_SIM
+	// BAR Droid: BarDroidPrevSkip, read once a frame by the unit and feature handlers before their copies
+	static bool barDroidPrevSkip;
+	static void BarDroidReadPrevSkip();
+#endif
 
 	CMatrix44f ComposeMatrix(const float3& p) const { return (CMatrix44f(p, -rightdir, updir, frontdir)); }
 	virtual CMatrix44f GetTransformMatrix(bool synced = false, bool fullread = false) const = 0;

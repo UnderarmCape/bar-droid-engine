@@ -476,6 +476,7 @@ void CUnitHandler::UpdatePreFrame()
 	// late 8v8 on the dev phone (simpleperf, 2026-11-05).
 	static constexpr int BLOCK = 16;
 	const int numUnits = activeUnits.size();
+	CSolidObject::BarDroidReadPrevSkip();
 	for_mt(0, (numUnits + BLOCK - 1) / BLOCK, [this, numUnits](const int block) {
 		for (int i = block * BLOCK, end = std::min(numUnits, i + BLOCK); i < end; ++i) {
 			activeUnits[i]->UpdatePrevFrameTransform();

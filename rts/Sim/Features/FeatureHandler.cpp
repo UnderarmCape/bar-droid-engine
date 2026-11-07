@@ -206,6 +206,7 @@ void CFeatureHandler::UpdatePreFrame()
 	}
 	static constexpr int BLOCK = 64;
 	const int numFeatures = list.size();
+	CSolidObject::BarDroidReadPrevSkip();
 	for_mt(0, (numFeatures + BLOCK - 1) / BLOCK, [numFeatures](const int block) {
 		for (int i = block * BLOCK, end = std::min(numFeatures, i + BLOCK); i < end; ++i) {
 			list[i]->UpdatePrevFrameTransform();

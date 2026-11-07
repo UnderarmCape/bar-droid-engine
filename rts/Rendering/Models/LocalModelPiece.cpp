@@ -76,9 +76,17 @@ LocalModelPiece::~LocalModelPiece()
 	spring::SafeDelete(colvol);
 }
 
+#ifdef BARDROID_SIM
+// (LocalModel::barDroidPrevStale: this piece's transform will change or did)
+#define BARDROID_PREV_STALE() do { if (localModel != nullptr) localModel->barDroidPrevStale = true; } while (false)
+#else
+#define BARDROID_PREV_STALE() do {} while (false)
+#endif
+
 void LocalModelPiece::SetDirty() {
 	RECOIL_DETAILED_TRACY_ZONE;
 	dirty = true;
+	BARDROID_PREV_STALE();
 
 	for (LocalModelPiece* child: children) {
 		if (child->dirty)
@@ -184,12 +192,14 @@ void LocalModelPiece::UpdatePieceSpaceTransform()
 
 void LocalModelPiece::UpdateModelSpaceTransform(const Transform& pTra)
 {
+	BARDROID_PREV_STALE();
 	modelSpaceTra = pTra * pieceSpaceTra;
 	modelSpaceMat = modelSpaceTra.ToMatrix();
 }
 
 void LocalModelPiece::UpdateModelSpaceTransform(const LocalModelPiece* parent)
 {
+	BARDROID_PREV_STALE();
 	if (parent)
 		modelSpaceTra = parent->modelSpaceTra * pieceSpaceTra;
 	else
@@ -211,6 +221,7 @@ void LocalModelPiece::UpdateChildTransformRec(bool updateChildTransform) const
 	}
 
 	if (updateChildTransform) {
+		BARDROID_PREV_STALE();
 		if (parent != nullptr)
 			modelSpaceTra = parent->modelSpaceTra * pieceSpaceTra;
 		else
@@ -232,6 +243,7 @@ void LocalModelPiece::UpdateParentMatricesRec() const
 
 	dirty = false;
 	wasUpdated[0] = true;  //update for current frame
+	BARDROID_PREV_STALE();
 
 	pieceSpaceTra = CalcPieceSpaceTransform(pos, rot, scale);
 

@@ -13,6 +13,13 @@
 #include "System/Quaternion.h"
 
 #include "System/Misc/TracyDefs.h"
+#ifdef BARDROID_SIM
+#include "System/Config/ConfigHandler.h"
+
+CONFIG(bool, BarDroidPrevSkip).defaultValue(true).description("BAR Droid: a model's previous-frame piece transforms (drawing's interpolation) copied only when one of its pieces changed since the last copy; 0: every frame, as stock");
+bool CSolidObject::barDroidPrevSkip = true;
+void CSolidObject::BarDroidReadPrevSkip() { barDroidPrevSkip = configHandler->GetBool("BarDroidPrevSkip"); }
+#endif
 
 int CSolidObject::deletingRefID = -1;
 
@@ -463,9 +470,22 @@ void CSolidObject::CondUpdatePrevTransform()
 
 void CSolidObject::UpdatePrevFrameTransform()
 {
+#ifdef BARDROID_SIM
+	// BAR Droid: only a model whose pieces changed since the last copy (LocalModel::barDroidPrevStale): otherwise every
+	// piece's previous transform already equals its current one and none is dirty (2026-11-07: this copy over every
+	// piece of every unit and feature was ~3 % of the engine's CPU in a late 8v8; the data is for drawing only)
+	if (localModel.barDroidPrevStale || !barDroidPrevSkip) {
+		for (auto& lmp : localModel.pieces) {
+			lmp.SavePrevModelSpaceTransform();
+		}
+		// (after the copies: a dirty piece's update inside them marks the model again, and all are equal now)
+		localModel.barDroidPrevStale = false;
+	}
+#else
 	for (auto& lmp : localModel.pieces) {
 		lmp.SavePrevModelSpaceTransform();
 	}
+#endif
 
 	preFrameTra = Transform{ CQuaternion::MakeFrom(GetTransformMatrix(true)), pos };
 }
