@@ -17,6 +17,9 @@
 #include "System/Threading/ThreadPool.h"
 
 #include "System/Misc/TracyDefs.h"
+#ifdef BARDROID_SIM
+#include "Sim/Misc/BarDroidUnits.h"
+#endif
 
 #define USE_STAGGERED_UPDATES 0
 
@@ -262,6 +265,48 @@ inline void ILosType::UpdateUnit(CUnit* unit, bool ignore)
 	instanceHashes[hash].push_back(li);
 	UpdateInstanceStatus(li, SLosInstance::TLosStatus::NEW);
 }
+
+
+#ifdef BARDROID_SIM
+// BAR Droid (BarDroidLosGather): UpdateUnit above, line for line, up to each of its returns, without its writes: true
+// where it returns having changed nothing. Its other paths (RemoveUnit with an instance, a radius gone with an
+// instance, an instance that no longer fits) are false.
+bool ILosType::BarDroidUpdateIsNoOp(const CUnit* unit) const
+{
+	if (unit->isDead || unit->beingBuilt)
+		return true;
+
+	const bool sightOnly = (type == LOS_TYPE_LOS) || (type == LOS_TYPE_AIRLOS);
+	const bool noSensors = (!unit->activated || unit->IsStunned());
+	if (!sightOnly && noSensors)
+		return (unit->los[type] == nullptr); // (RemoveUnit returns at once without an instance)
+
+	if (sightOnly && losHandler->GetGlobalLOS(unit->allyteam))
+		return true;
+
+	const SLosInstance* uli = unit->los[type];
+
+	const float3 losPos = unit->midPos;
+	const float radius = GetRadius(unit);
+	const float height = GetHeight(unit);
+	const int2 baseLos = PosToSquare(losPos);
+	      int allyteam = unit->allyteam;
+
+	if (type == LOS_TYPE_JAMMER || type == LOS_TYPE_SONAR_JAMMER)
+		allyteam *= modInfo.separateJammers;
+
+	if (radius <= 0.0f)
+		return (uli == nullptr);
+
+	// UpdateUnit's CanRefInstance(uli): unchanged
+	return (uli != nullptr
+	    && (uli->basePos    == baseLos)
+	    && (uli->baseHeight == height)
+	    && (uli->radius     == radius)
+	    && (uli->allyteam   == allyteam)
+	);
+}
+#endif
 
 
 inline void ILosType::RemoveUnit(CUnit* unit, bool delayed)
@@ -822,6 +867,64 @@ void CLosHandler::Update()
 	SCOPED_TIMER("Sim::Los");
 
 	const std::vector<CUnit*>& activeUnits = unitHandler.GetActiveUnits();
+
+#if defined(BARDROID_SIM) && (USE_STAGGERED_UPDATES == 0)
+	if (BarDroidUnits::losGather) {
+		// BAR Droid (BarDroidLosGather): each of the 7 types read every unit's sensor state again (7 passes of cache
+		// misses over ~3,000 units in a late 8v8: ILosType::UpdateUnit was 7 % of the workers' time), and nearly every
+		// call changed nothing. Here one parallel pass over the units marks, per type, the units whose UpdateUnit would
+		// change something (BarDroidUpdateIsNoOp: its tests without its writes), and each type then calls the stock
+		// UpdateUnit for those only, in the units' order. The calls left out are exactly the ones that change nothing,
+		// and what they test cannot change before their place in the loop: while the types run, a unit's los[type] is
+		// written only by its own type's call for that unit, and an instance's key (base square, height, radius, ally
+		// team) only when it is made (CreateInstance takes no instance a unit still holds). So every type's state ends
+		// as the stock loop leaves it, call for call.
+		static std::vector<uint8_t> work;
+		static constexpr int BLOCK = 32;
+		const int numUnits = activeUnits.size();
+		work.resize(numUnits);
+
+		for_mt(0, (numUnits + BLOCK - 1) / BLOCK, [&](const int block) {
+			const int beg = block * BLOCK;
+			const int end = std::min(numUnits, beg + BLOCK);
+
+			for (int i = beg; i < end; ++i) {
+				if (i + 4 < end) {
+					const CUnit* ahead = activeUnits[i + 4];
+					BARDROID_PREFETCH(&ahead->isDead);
+					BARDROID_PREFETCH(&ahead->midPos);
+					BARDROID_PREFETCH(&ahead->los);
+					BARDROID_PREFETCH(&ahead->losRadius);
+				}
+
+				const CUnit* u = activeUnits[i];
+				uint8_t bits = 0;
+
+				for (size_t t = 0; t < losTypes.size(); ++t) {
+					bits |= uint8_t(!losTypes[t]->BarDroidUpdateIsNoOp(u)) << t;
+				}
+
+				work[i] = bits;
+			}
+		});
+
+		for_mt(0, losTypes.size(), [&](const int idx) {
+			ILosType* lt = losTypes[idx];
+			const uint8_t bit = uint8_t(1 << idx);
+
+			{
+				ZoneScopedN("Sim::Los::UpdateLosTypeMT");
+				for (int i = 0; i < numUnits; ++i) {
+					if ((work[i] & bit) != 0)
+						lt->UpdateUnit(activeUnits[i], false);
+				}
+			}
+
+			lt->Update();
+		});
+		return;
+	}
+#endif
 
 	#if (USE_STAGGERED_UPDATES == 1)
 	const size_t losBatchRate = UNIT_SLOWUPDATE_RATE;

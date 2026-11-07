@@ -132,6 +132,10 @@ public:
 	void UpdateHeightMapSynced(SRectangle rect);
 	void RemoveUnit(CUnit* unit, bool delayed = false);
 	void UpdateUnit(CUnit* unit, bool ignore = false);
+#ifdef BARDROID_SIM
+	// BAR Droid (BarDroidLosGather): true if UpdateUnit(unit) would return without changing anything (reads only)
+	bool BarDroidUpdateIsNoOp(const CUnit* unit) const;
+#endif
 
 private:
 	//void PostLoad();
