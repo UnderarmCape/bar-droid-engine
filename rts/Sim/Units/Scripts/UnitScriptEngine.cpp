@@ -25,7 +25,7 @@ CONFIG(bool, AnimationMT).deprecated(true);
 
 // BAR Droid (bardroid/units): the switches of Sim/Misc/BarDroidUnits.h; each 0 gives the stock code, each 1 the same
 // results by a faster way
-CONFIG(bool, BarDroidAnimPrefetch).defaultValue(true).description("BAR Droid: the unit scripts' animation step in blocks of 32 scripts a thread, with memory prefetch hints a few scripts ahead (the same TickAllAnims per script)");
+CONFIG(bool, BarDroidAnimPrefetch).defaultValue(true).description("BAR Droid: the unit scripts' animation step in blocks of 64 scripts a thread, with memory prefetch hints a few scripts ahead (the same TickAllAnims per script)");
 CONFIG(bool, BarDroidAnimDispatch).defaultValue(true).description("BAR Droid: an animation's step called directly by its type (a switch) instead of through a member-function pointer (the same functions)");
 CONFIG(bool, BarDroidAnimDirtyRange).defaultValue(true).description("BAR Droid: the animation step's piece walk only over the index range its model's dirty pieces lie in (LocalModel keeps it; the pieces outside are clean)");
 CONFIG(bool, BarDroidPieceTrigCache).defaultValue(true).description("BAR Droid: a piece's half-angle sines and cosines kept per axis by the angle's bits, and its piece-space transform kept while position, rotation and scale are bit-equal (memos of pure functions)");
