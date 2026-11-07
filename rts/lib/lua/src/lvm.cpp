@@ -1042,13 +1042,16 @@ BD_INLINE int bd_poscall (lua_State *L, StkId firstResult) {
         goto *bd_ops[GET_OPCODE(i)]; \
       }
 
-/* a called Lua function's second code line (its first is loaded at once), constants and first upvalues */
-#define BD_PREFETCH_ENTRY(ncl_) { \
+/* a called Lua function's first two code lines, constants and first upvalues, issued as soon as its closure and
+   prototype are known, so they load while the call is set up (prefetches only) */
+#define BD_PREFETCH_ENTRY(ncl_,p_) { \
         if (prefetch) { \
           const LClosure *pcl_ = (ncl_); \
+          const Proto *pp_ = (p_); \
           const int pnup_ = pcl_->nupvalues; \
-          __builtin_prefetch(pc + 16); \
-          __builtin_prefetch(k); \
+          __builtin_prefetch(pp_->code); \
+          __builtin_prefetch(pp_->code + 16); \
+          __builtin_prefetch(pp_->k); \
           if (pnup_ > 0) __builtin_prefetch(pcl_->upvals[0]); \
           if (pnup_ > 1) __builtin_prefetch(pcl_->upvals[1]); \
           if (pnup_ > 2) __builtin_prefetch(pcl_->upvals[2]); \
@@ -1396,6 +1399,7 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
         if (likely_bd(!((char *)L->stack_last - (char *)L->top <= p->maxstacksize*(int)sizeof(TValue)))) {
           CallInfo *ci;
           StkId st, nbase;
+          BD_PREFETCH_ENTRY(&ncl->l, p);
           L->ci->savedpc = L->savedpc;
           if (likely_bd(!p->is_vararg)) {  /* no varargs? */
             nbase = ra + 1;
@@ -1434,7 +1438,6 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
           base = nbase;
           k = p->k;
           pc = p->code;
-          BD_PREFETCH_ENTRY(cl);
           BD_DISPATCH();
         }
       }
@@ -1491,6 +1494,7 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
         CallInfo *ci;
         StkId st, nbase, func, pfunc;
         int aux;
+        BD_PREFETCH_ENTRY(ncl, p);
         L->ci->savedpc = L->savedpc;
         if (likely_bd(!p->is_vararg)) {  /* no varargs? */
           nbase = ra + 1;
@@ -1539,7 +1543,6 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
         base = L->base;
         k = p->k;
         pc = L->savedpc;
-        BD_PREFETCH_ENTRY(cl);
         BD_DISPATCH();
       }
     }
