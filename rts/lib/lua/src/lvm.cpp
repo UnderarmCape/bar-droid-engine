@@ -801,14 +801,16 @@ void luaV_execute (lua_State *L, int nexeccalls) {
 ** {==================================================================
 ** BAR Droid (engine branch): luaV_execute_bd, luaV_execute with
 **  - computed-goto dispatch: each opcode's handler ends in its own indirect jump (BarDroidLuaVM);
-**  - BarDroidLuaFastTable: luaV_gettable/luaV_settable's first step inline in the VM, with luaH_get's string and
-**    array-part lookups inline (the same lookups as luaH_getstr/luaH_getnum; luaH_get/luaH_set for every other
-**    key, every new key and every metamethod step, which run the stock loops' remaining steps);
-**  - BarDroidLuaFastCall: luaD_precall's and luaD_poscall's work inline for calls that need no stack or CallInfo
-**    growth, no call or return hook, no __call and no vararg adjustment (everything else calls luaD_precall);
+**  - BarDroidLuaFastTable: luaV_gettable/luaV_settable's first step inline in the VM (and luaV_gettable's second
+**    when the first found an __index table), with luaH_get's string and array-part lookups inline (the same
+**    lookups as luaH_getstr/luaH_getnum; luaH_get/luaH_set for every other key, every new key and every further
+**    metamethod step, which run the stock loops' remaining steps);
+**  - BarDroidLuaFastCall: luaD_precall's and luaD_poscall's work inline for calls and tail calls (varargs included)
+**    that need no stack or CallInfo growth, no call or return hook and no __call (everything else: luaD_precall);
 **  - BarDroidLuaFastCompare: == of numbers, strings, booleans and nil, < and <= of numbers inline;
-**  - BarDroidLuaPrefetch: cache prefetches only (a called Lua function's second code line, constants and first
-**    upvalues; a function value as it is loaded into a register, before the call that usually follows).
+**  - BarDroidLuaFastIter: a generic for's call of a C iterator (next, ipairs' step) without luaD_call;
+**  - BarDroidLuaPrefetch: cache prefetches only (a called Lua function's first two code lines, constants and first
+**    upvalues as soon as its closure and Proto are known; a function value as it is loaded into a register).
 ** Each fast path writes what the stock path writes, in the same order where anything could observe it (stack slots,
 ** CallInfo fields, L->savedpc, L->base, L->top, table flags, GC barriers), so errors, hooks, tracebacks, the GC and
 ** C functions see the same state. Nothing here allocates where stock does not, or the other way round.
