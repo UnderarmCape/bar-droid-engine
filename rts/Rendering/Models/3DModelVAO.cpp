@@ -15,6 +15,30 @@
 
 #include "System/Misc/TracyDefs.h"
 
+#if defined(BARDROID_SIM) && !defined(HEADLESS)
+#include "Rendering/GlobalRendering.h"
+#include "System/Config/ConfigHandler.h"
+
+// BAR Droid (engine branch): every Submit writes the instance buffer from its start, and every immediate draw (units
+// being built, build previews) one slot of it, while the frame's earlier draws still read it. A tiler's driver keeps
+// those draws' data by copying the whole buffer (1.08 MB) first, or stalls. 1: its storage given up before each
+// batched write (a fresh one, nothing copied; the earlier draws keep theirs); 2: before each immediate write as well.
+// Drawing only; read every drawn frame (in-game A/B).
+CONFIG(int, BarDroidInstanceOrphan).defaultValue(0).minimumValue(0).maximumValue(2)
+	.description("BAR Droid: the model instance buffer's storage given up before each write (1: batched, 2: immediate too) instead of written while in use");
+
+static int BarDroidInstanceOrphan()
+{
+	static uint32_t lastFrame = ~0u;
+	static int mode = 0;
+	if (globalRendering->drawFrame != lastFrame) {
+		lastFrame = globalRendering->drawFrame;
+		mode = configHandler->GetInt("BarDroidInstanceOrphan");
+	}
+	return mode;
+}
+#endif
+
 
 void S3DModelVAO::EnableAttribs(bool inst) const
 {
@@ -505,6 +529,10 @@ void S3DModelVAO::Submit(GLenum mode, bool bindUnbind)
 		return;
 
 	instVBO.Bind();
+#if defined(BARDROID_SIM) && !defined(HEADLESS)
+	if (BarDroidInstanceOrphan() >= 1)
+		instVBO.Invalidate();
+#endif
 	instVBO.SetBufferSubData(allRenderModelData);
 	instVBO.Unbind();
 
@@ -553,6 +581,10 @@ bool S3DModelVAO::SubmitImmediatelyImpl(const TObj* obj, uint32_t indexStart, ui
 	};
 
 	instVBO.Bind();
+#if defined(BARDROID_SIM) && !defined(HEADLESS)
+	if (BarDroidInstanceOrphan() >= 2)
+		instVBO.Invalidate();
+#endif
 	instVBO.SetBufferSubData(immediateBaseInstanceAbs * sizeof(SInstanceData), sizeof(SInstanceData), &instanceData);
 	instVBO.Unbind();
 
