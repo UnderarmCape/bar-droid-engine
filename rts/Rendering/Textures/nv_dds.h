@@ -226,6 +226,10 @@ namespace nv_dds
             // BAR Droid (engine branch): the same from level skipLevels down, as level 0 (a smaller texture with the
             // file's own smaller mipmaps; nothing re-encoded): S3OTextureHandler's BarDroidModelTextureMax
             bool upload_texture2D_from(unsigned int imageIndex, int target, unsigned int skipLevels) const;
+#ifdef BARDROID_SIM
+            // BAR Droid: a KTX 1 file of ASTC mipmap levels as this image (CBitmap's BarDroidModelTextureDir)
+            bool load_ktx(const unsigned char* data, size_t size);
+#endif
             bool upload_texture3D() const;
             bool upload_textureRectangle() const;
             bool upload_textureCubemap() const;
