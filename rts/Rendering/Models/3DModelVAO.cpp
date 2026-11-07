@@ -74,30 +74,32 @@ void S3DModelVAO::EnableAttribs(bool inst) const
 #if defined(BARDROID_SIM) && !defined(HEADLESS)
 bool S3DModelVAO::BarDroidRingReady()
 {
-	if (barDroidRingPtr != nullptr)
+	if (barDroidRingBuf != 0)
 		return true;
 	if (barDroidRingFailed)
 		return false;
-	barDroidRingFailed = true;
-	if (!GLAD_GL_ARB_buffer_storage) {
-		LOG_L(L_WARNING, "[S3DModelVAO] BAR Droid: no ARB_buffer_storage, instance data as before");
-		return false;
-	}
 	const GLsizeiptr size = GLsizeiptr(2) * BARDROID_RING_HALF * sizeof(SInstanceData);
-	const GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
 	glGenBuffers(1, &barDroidRingBuf);
 	glBindBuffer(GL_ARRAY_BUFFER, barDroidRingBuf);
-	glBufferStorage(GL_ARRAY_BUFFER, size, nullptr, flags);
-	barDroidRingPtr = static_cast<uint8_t*>(glMapBufferRange(GL_ARRAY_BUFFER, 0, size, flags));
+	if (GLAD_GL_ARB_buffer_storage) {
+		// mapped once, for good
+		const GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+		glBufferStorage(GL_ARRAY_BUFFER, size, nullptr, flags);
+		barDroidRingPtr = static_cast<uint8_t*>(glMapBufferRange(GL_ARRAY_BUFFER, 0, size, flags));
+	} else {
+		// (Mesa without coherent persistent mapping, the dev phone's Freedreno): each write's range mapped unsynchronized
+		glBufferData(GL_ARRAY_BUFFER, size, nullptr, GL_STREAM_DRAW);
+	}
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
-	if (barDroidRingPtr == nullptr) {
+	if (GLAD_GL_ARB_buffer_storage && barDroidRingPtr == nullptr) {
 		LOG_L(L_WARNING, "[S3DModelVAO] BAR Droid: the instance ring could not be mapped, instance data as before");
 		glDeleteBuffers(1, &barDroidRingBuf);
 		barDroidRingBuf = 0;
+		barDroidRingFailed = true;
 		return false;
 	}
-	barDroidRingFailed = false;
-	LOG("[S3DModelVAO] BAR Droid: instance data through a mapped ring (%u KB)", unsigned(size / 1024));
+	LOG("[S3DModelVAO] BAR Droid: instance data through a ring (%u KB, %s)", unsigned(size / 1024),
+		(barDroidRingPtr != nullptr) ? "mapped persistently" : "each write mapped unsynchronized");
 	return true;
 }
 
@@ -117,7 +119,21 @@ uint32_t S3DModelVAO::BarDroidRingWrite(const SInstanceData* data, uint32_t coun
 		barDroidRingPos = barDroidRingHalf * BARDROID_RING_HALF;
 	}
 	const uint32_t pos = barDroidRingPos;
-	memcpy(barDroidRingPtr + size_t(pos) * sizeof(SInstanceData), data, size_t(count) * sizeof(SInstanceData));
+	const size_t bytes = size_t(count) * sizeof(SInstanceData);
+	if (barDroidRingPtr != nullptr) {
+		memcpy(barDroidRingPtr + size_t(pos) * sizeof(SInstanceData), data, bytes);
+	} else {
+		glBindBuffer(GL_ARRAY_BUFFER, barDroidRingBuf);
+		void* dst = glMapBufferRange(GL_ARRAY_BUFFER, GLintptr(pos) * sizeof(SInstanceData), GLsizeiptr(bytes),
+			GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT | GL_MAP_INVALIDATE_RANGE_BIT);
+		if (dst != nullptr) {
+			memcpy(dst, data, bytes);
+			glUnmapBuffer(GL_ARRAY_BUFFER);
+		} else {
+			glBufferSubData(GL_ARRAY_BUFFER, GLintptr(pos) * sizeof(SInstanceData), GLsizeiptr(bytes), data);
+		}
+		glBindBuffer(GL_ARRAY_BUFFER, 0);
+	}
 	barDroidRingPos += count;
 	return pos;
 }

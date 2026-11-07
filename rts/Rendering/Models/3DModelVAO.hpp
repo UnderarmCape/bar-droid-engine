@@ -125,7 +125,7 @@ private:
 	void EnableAttribs(bool inst) const;
 	void DisableAttribs() const;
 #if defined(BARDROID_SIM)
-	// BAR Droid (BarDroidInstanceOrphan 3): instance data written into a persistently mapped ring of two halves (no
+	// BAR Droid (BarDroidInstanceOrphan 3): instance data written into a ring of two halves (mapped persistently, or each write unsynchronized; no
 	// driver sync per write; a fence per half), the instance attribute pointed at the ring while it is in use
 	bool BarDroidRingReady();
 	uint32_t BarDroidRingWrite(const SInstanceData* data, uint32_t count);
