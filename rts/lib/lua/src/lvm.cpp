@@ -817,6 +817,10 @@ void luaV_execute (lua_State *L, int nexeccalls) {
 ** ===================================================================
 */
 
+#if defined(LUA_COMPAT_VARARG)
+#error "luaV_execute_bd's vararg calls (BarDroidLuaFastCall) do adjust_varargs without LUA_COMPAT_VARARG's arg table"
+#endif
+
 #define BD_INLINE	static inline __attribute__((always_inline))
 /* (branch hints for the fast paths' layout: the function has no PGO profile yet) */
 #define likely_bd(x)	__builtin_expect(!!(x), 1)
@@ -1383,19 +1387,36 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
     if (b != 0) L->top = ra+b;  /* else previous instruction set top */
     L->savedpc = pc;
     /* luaD_precall without its calls: a function (no __call), no call hook, a free CallInfo (inc_ci without growCI),
-       room on the stack (luaD_checkstack without luaD_growstack), and for a Lua function no varargs */
+       room on the stack (luaD_checkstack without luaD_growstack); a vararg Lua function's adjust_varargs too (this
+       Lua has no LUA_COMPAT_VARARG: no `arg' table) */
     if (likely_bd(fastCall && ttisfunction(ra) && !(L->hookmask & LUA_MASKCALL) && L->ci != L->end_ci)) {
       Closure *ncl = clvalue(ra);
       if (!ncl->c.isC) {
         Proto *p = ncl->l.p;
-        if (likely_bd(!p->is_vararg &&
-            !((char *)L->stack_last - (char *)L->top <= p->maxstacksize*(int)sizeof(TValue)))) {
+        if (likely_bd(!((char *)L->stack_last - (char *)L->top <= p->maxstacksize*(int)sizeof(TValue)))) {
           CallInfo *ci;
           StkId st, nbase;
           L->ci->savedpc = L->savedpc;
-          nbase = ra + 1;
-          if (L->top > nbase + p->numparams)
-            L->top = nbase + p->numparams;
+          if (likely_bd(!p->is_vararg)) {  /* no varargs? */
+            nbase = ra + 1;
+            if (L->top > nbase + p->numparams)
+              L->top = nbase + p->numparams;
+          }
+          else {  /* adjust_varargs (ldo.cpp) without LUA_COMPAT_VARARG */
+            const int nfixargs = p->numparams;
+            int actual = cast_int(L->top - ra) - 1;
+            StkId fixed;
+            int j;
+            for (; actual < nfixargs; ++actual)
+              setnilvalue(L->top++);
+            /* move fixed parameters to final position */
+            fixed = L->top - actual;  /* first fixed argument */
+            nbase = L->top;  /* final position of first argument */
+            for (j = 0; j < nfixargs; j++) {
+              setobjs2s(L, L->top++, fixed+j);
+              setnilvalue(fixed+j);
+            }
+          }
           ci = ++L->ci;  /* now `enter' new function */
           ci->func = ra;
           L->base = ci->base = nbase;
