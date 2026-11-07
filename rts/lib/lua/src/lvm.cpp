@@ -817,6 +817,10 @@ void luaV_execute (lua_State *L, int nexeccalls) {
 ** ===================================================================
 */
 
+#if defined(LUA_COMPAT_VARARG)
+#error "luaV_execute_bd's vararg calls (BarDroidLuaFastCall) do adjust_varargs without LUA_COMPAT_VARARG's arg table"
+#endif
+
 #define BD_INLINE	static inline __attribute__((always_inline))
 /* (branch hints for the fast paths' layout: the function has no PGO profile yet) */
 #define likely_bd(x)	__builtin_expect(!!(x), 1)
@@ -874,16 +878,16 @@ BD_INLINE TValue *bd_rawset (lua_State *L, Table *t, const TValue *key) {
 }
 
 
-/* luaV_gettable's loop from where its first step found metamethod `tm' of table `t' (loop counter 1 on) */
+/* luaV_gettable's loop from where its step loop0 - 1 found metamethod `tm' of `t' (loop counter loop0 on) */
 BD_NOINLINE void bd_gettable_tm (lua_State *L, const TValue *t, const TValue *tm,
-                                 TValue *key, StkId val) {
+                                 TValue *key, StkId val, int loop0) {
   int loop;
   if (ttisfunction(tm)) {
     callTMres(L, val, tm, t, key);
     return;
   }
   t = tm;  /* else repeat with `tm' */
-  for (loop = 1; loop < MAXTAGLOOP; loop++) {
+  for (loop = loop0; loop < MAXTAGLOOP; loop++) {
     if (ttistable(t)) {  /* `t' is a table? */
       Table *h = hvalue(t);
       const TValue *res = bd_rawget(h, key); /* do a primitive get */
@@ -903,6 +907,26 @@ BD_NOINLINE void bd_gettable_tm (lua_State *L, const TValue *t, const TValue *tm
     t = tm;  /* else repeat with `tm' */
   }
   luaG_runerror(L, "loop in gettable");
+}
+
+
+/* luaV_gettable's loop after its first step found metamethod `tm' of `t': its second step inline when `tm' is a table
+   (an __index table: a class, a widget's environment over its System table), the rest in bd_gettable_tm; returns
+   nonzero when a metamethod may have run (the stack may have moved) */
+BD_INLINE int bd_gettable_next (lua_State *L, const TValue *t, const TValue *tm, TValue *key, StkId val) {
+  if (likely_bd(ttistable(tm))) {
+    Table *h = hvalue(tm);
+    const TValue *res = bd_rawget(h, key);  /* (the loop's step 1: t = tm) */
+    const TValue *tm2;
+    if (likely_bd(!ttisnil(res) || (tm2 = fasttm(L, h->metatable, TM_INDEX)) == NULL)) {
+      setobj2s(L, val, res);
+      return 0;
+    }
+    bd_gettable_tm(L, tm, tm2, key, val, 2);
+    return 1;
+  }
+  bd_gettable_tm(L, t, tm, key, val, 1);
+  return 1;
 }
 
 
@@ -979,8 +1003,8 @@ BD_INLINE int bd_poscall (lua_State *L, StkId firstResult) {
             if (prefetch && ttisfunction(gv_)) __builtin_prefetch(clvalue(gv_)); \
           } \
           else { \
-            bd_gettable_tm(L, gt_, gtm_, gk_, gv_); \
-            base = L->base; \
+            if (bd_gettable_next(L, gt_, gtm_, gk_, gv_)) \
+              base = L->base; \
           } \
         } \
         else \
@@ -1127,8 +1151,8 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
       else {
         TValue g;
         sethvalue(L, &g, h);
-        bd_gettable_tm(L, &g, tm, rb, ra);
-        base = L->base;
+        if (bd_gettable_next(L, &g, tm, rb, ra))
+          base = L->base;
       }
     }
     else {
@@ -1363,19 +1387,36 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
     if (b != 0) L->top = ra+b;  /* else previous instruction set top */
     L->savedpc = pc;
     /* luaD_precall without its calls: a function (no __call), no call hook, a free CallInfo (inc_ci without growCI),
-       room on the stack (luaD_checkstack without luaD_growstack), and for a Lua function no varargs */
+       room on the stack (luaD_checkstack without luaD_growstack); a vararg Lua function's adjust_varargs too (this
+       Lua has no LUA_COMPAT_VARARG: no `arg' table) */
     if (likely_bd(fastCall && ttisfunction(ra) && !(L->hookmask & LUA_MASKCALL) && L->ci != L->end_ci)) {
       Closure *ncl = clvalue(ra);
       if (!ncl->c.isC) {
         Proto *p = ncl->l.p;
-        if (likely_bd(!p->is_vararg &&
-            !((char *)L->stack_last - (char *)L->top <= p->maxstacksize*(int)sizeof(TValue)))) {
+        if (likely_bd(!((char *)L->stack_last - (char *)L->top <= p->maxstacksize*(int)sizeof(TValue)))) {
           CallInfo *ci;
           StkId st, nbase;
           L->ci->savedpc = L->savedpc;
-          nbase = ra + 1;
-          if (L->top > nbase + p->numparams)
-            L->top = nbase + p->numparams;
+          if (likely_bd(!p->is_vararg)) {  /* no varargs? */
+            nbase = ra + 1;
+            if (L->top > nbase + p->numparams)
+              L->top = nbase + p->numparams;
+          }
+          else {  /* adjust_varargs (ldo.cpp) without LUA_COMPAT_VARARG */
+            const int nfixargs = p->numparams;
+            int actual = cast_int(L->top - ra) - 1;
+            StkId fixed;
+            int j;
+            for (; actual < nfixargs; ++actual)
+              setnilvalue(L->top++);
+            /* move fixed parameters to final position */
+            fixed = L->top - actual;  /* first fixed argument */
+            nbase = L->top;  /* final position of first argument */
+            for (j = 0; j < nfixargs; j++) {
+              setobjs2s(L, L->top++, fixed+j);
+              setnilvalue(fixed+j);
+            }
+          }
           ci = ++L->ci;  /* now `enter' new function */
           ci->func = ra;
           L->base = ci->base = nbase;
@@ -1441,6 +1482,67 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
     if (b != 0) L->top = ra+b;  /* else previous instruction set top */
     L->savedpc = pc;
     lua_assert(GETARG_C(i) - 1 == LUA_MULTRET);
+    /* BarDroidLuaFastCall for a Lua function: luaD_precall's Lua case as in OP_CALL, then the frame move below */
+    if (likely_bd(fastCall && ttisfunction(ra) && !clvalue(ra)->c.isC && !(L->hookmask & LUA_MASKCALL) &&
+                  L->ci != L->end_ci)) {
+      LClosure *ncl = &clvalue(ra)->l;
+      Proto *p = ncl->p;
+      if (likely_bd(!((char *)L->stack_last - (char *)L->top <= p->maxstacksize*(int)sizeof(TValue)))) {
+        CallInfo *ci;
+        StkId st, nbase, func, pfunc;
+        int aux;
+        L->ci->savedpc = L->savedpc;
+        if (likely_bd(!p->is_vararg)) {  /* no varargs? */
+          nbase = ra + 1;
+          if (L->top > nbase + p->numparams)
+            L->top = nbase + p->numparams;
+        }
+        else {  /* adjust_varargs (ldo.cpp) without LUA_COMPAT_VARARG */
+          const int nfixargs = p->numparams;
+          int actual = cast_int(L->top - ra) - 1;
+          StkId fixed;
+          int j;
+          for (; actual < nfixargs; ++actual)
+            setnilvalue(L->top++);
+          fixed = L->top - actual;  /* first fixed argument */
+          nbase = L->top;  /* final position of first argument */
+          for (j = 0; j < nfixargs; j++) {
+            setobjs2s(L, L->top++, fixed+j);
+            setnilvalue(fixed+j);
+          }
+        }
+        ci = ++L->ci;  /* now `enter' new function */
+        ci->func = ra;
+        L->base = ci->base = nbase;
+        ci->top = L->base + p->maxstacksize;
+        lua_assert(ci->top <= L->stack_last);
+        L->savedpc = p->code;  /* starting point */
+        ci->tailcalls = 0;
+        ci->nresults = LUA_MULTRET;
+        for (st = L->top; st < ci->top; st++)
+          setnilvalue(st);
+        L->top = ci->top;
+        /* tail call: put new frame in place of previous one (the PCRLUA case below) */
+        ci = L->ci - 1;  /* previous frame */
+        func = ci->func;
+        pfunc = (ci+1)->func;  /* previous function index */
+        if (L->openupval) luaF_close(L, ci->base);
+        L->base = ci->base = ci->func + ((ci+1)->base - pfunc);
+        for (aux = 0; pfunc+aux < L->top; aux++)  /* move frame down */
+          setobjs2s(L, func+aux, pfunc+aux);
+        ci->top = L->top = func+aux;  /* correct top */
+        ci->savedpc = L->savedpc;
+        ci->tailcalls++;  /* one more call lost */
+        L->ci--;  /* remove new frame */
+        /* (bd_reentry's loads, known here) */
+        cl = ncl;
+        base = L->base;
+        k = p->k;
+        pc = L->savedpc;
+        BD_PREFETCH_ENTRY(cl);
+        BD_DISPATCH();
+      }
+    }
     switch (luaD_precall(L, ra, LUA_MULTRET)) {
       case PCRLUA: {
         /* tail call: put new frame in place of previous one */
