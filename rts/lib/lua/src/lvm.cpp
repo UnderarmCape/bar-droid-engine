@@ -1049,6 +1049,7 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
   const bool fastCall = barDroidLua.fastCall != 0;
   const bool fastCompare = barDroidLua.fastCompare != 0;
   const bool prefetch = barDroidLua.prefetch != 0;
+  const bool fastIter = barDroidLua.fastIter != 0;
   LClosure *cl;
   StkId base;
   TValue *k;
@@ -1516,6 +1517,33 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
     setobjs2s(L, cb+1, ra+1);
     setobjs2s(L, cb, ra);
     L->top = cb+3;  /* func. + 2 args (state and index) */
+    /* BarDroidLuaFastIter: luaD_call(L, cb, C) for a C iterator (next, ipairs' step) without the luaD_call and
+       luaD_precall/poscall calls: the same nCcalls count around it (a yield in it fails as in stock), the same
+       CallInfo, the same results, then luaD_call's luaC_checkGC. A Lua iterator, a hook, growth or the C-stack limit:
+       luaD_call itself */
+    if (fastIter && ttisfunction(cb) && clvalue(cb)->c.isC && !(L->hookmask & LUA_MASKCALL) &&
+        L->ci != L->end_ci && L->nCcalls + 1 < LUAI_MAXCCALLS &&
+        !((char *)L->stack_last - (char *)L->top <= LUA_MINSTACK*(int)sizeof(TValue))) {
+      CallInfo *ci;
+      int n;
+      L->savedpc = pc;  /* (Protect) */
+      ++L->nCcalls;
+      L->ci->savedpc = L->savedpc;
+      ci = ++L->ci;  /* now `enter' new function */
+      ci->func = cb;
+      L->base = ci->base = ci->func + 1;
+      ci->top = L->top + LUA_MINSTACK;
+      ci->nresults = GETARG_C(i);
+      bd_unlock(L);
+      n = (*clvalue(cb)->c.f)(L);  /* do the actual call */
+      bd_lock(L);
+      if (n >= 0)  /* (else PCRYIELD: luaD_call goes on without the poscall) */
+        bd_poscall(L, L->top - n);
+      L->nCcalls--;
+      luaC_checkGC(L);
+      base = L->base;  /* (Protect) */
+    }
+    else
     Protect(luaD_call(L, cb, GETARG_C(i)));
     L->top = L->ci->top;
     cb = RA(i) + 3;  /* previous call may change the stack */

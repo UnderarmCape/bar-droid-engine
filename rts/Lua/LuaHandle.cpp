@@ -87,6 +87,7 @@ CONFIG(int, BarDroidLuaFastCompare).defaultValue(1).minimumValue(0).maximumValue
 CONFIG(int, BarDroidLuaPrefetch).defaultValue(1).minimumValue(0).maximumValue(1).description("BAR Droid: cache prefetches of a called Lua function's code, constants and upvalues and of function values (no other effect); 0: none");
 CONFIG(int, BarDroidLuaStrHash).defaultValue(1).minimumValue(0).maximumValue(1).description("BAR Droid: string interning compares the stored hash before length and bytes; 0: stock");
 CONFIG(int, BarDroidLuaAllocRelaxed).defaultValue(1).minimumValue(0).maximumValue(1).description("BAR Droid: the Lua allocator's byte and call counters with one relaxed atomic add each (same values); 0: stock");
+CONFIG(int, BarDroidLuaFastIter).defaultValue(1).minimumValue(0).maximumValue(1).description("BAR Droid: a generic for's call of a C iterator (next, ipairs) set up inside the VM (needs BarDroidLuaVM); 0: stock luaD_call");
 #endif
 
 
@@ -4801,6 +4802,7 @@ void BarDroidLuaReadConfig(bool force)
 	s.prefetch     = configHandler->GetInt("BarDroidLuaPrefetch");
 	s.strHash      = configHandler->GetInt("BarDroidLuaStrHash");
 	s.allocRelaxed = configHandler->GetInt("BarDroidLuaAllocRelaxed");
+	s.fastIter     = configHandler->GetInt("BarDroidLuaFastIter");
 	barDroidLua = s;
 }
 #endif
