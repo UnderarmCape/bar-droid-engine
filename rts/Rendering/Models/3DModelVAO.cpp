@@ -141,6 +141,27 @@ void S3DModelVAO::ProcessIndicies(S3DModel* model)
 
 		std::for_each(begIdx, endIdx, [offset = modelPiece->vertIndex](uint32_t& indx) { indx += offset; }); // add per piece vertex offset to indices
 	}
+
+#if defined(BARDROID_SIM)
+	// BAR Droid (BarDroidModelLodShare): the coarse copy after them, every piece in it (its coarse list, else its own),
+	// so one draw of the range is the whole model, as with the full list
+	bool anyLod = false;
+	for (const auto* modelPiece : model->pieceObjects)
+		anyLod |= !modelPiece->barDroidLodIndices.empty();
+	if (anyLod) {
+		model->barDroidLodStart = static_cast<uint32_t>(ib + indxData.size());
+		for (auto* modelPiece : model->pieceObjects) {
+			if (!modelPiece->HasGeometryData())
+				continue;
+			const auto& lod = modelPiece->barDroidLodIndices.empty() ? modelPiece->GetIndicesVec() : modelPiece->barDroidLodIndices;
+			indxData.insert(indxData.end(), lod.begin(), lod.end());
+			const auto endIdx = indxData.end();
+			std::for_each(endIdx - lod.size(), endIdx, [offset = modelPiece->vertIndex](uint32_t& indx) { indx += offset; });
+			std::vector<uint32_t>().swap(modelPiece->barDroidLodIndices);   // (in the buffer now)
+		}
+		model->barDroidLodCount = static_cast<uint32_t>(ib + indxData.size() - model->barDroidLodStart);
+	}
+#endif
 }
 
 void S3DModelVAO::CreateVAO()
@@ -401,6 +422,14 @@ bool S3DModelVAO::AddToSubmission(const CUnit* unit)
 	assert(model);
 
 	return AddToSubmissionImpl(unit, model->indxStart, model->indxCount, unit->paletteIndex);
+}
+
+bool S3DModelVAO::AddToSubmissionLod(const CUnit* unit)
+{
+	const S3DModel* model = unit->model;
+	if (model == nullptr || model->barDroidLodCount == 0)
+		return false;
+	return AddToSubmissionImpl(unit, model->barDroidLodStart, model->barDroidLodCount, unit->paletteIndex);
 }
 
 bool S3DModelVAO::AddToSubmission(const CFeature* feature)

@@ -72,6 +72,8 @@ public:
 	bool AddToSubmission(const S3DModel* model, uint16_t paletteIndex);
 
 	bool AddToSubmission(const CUnit* unit);
+	// BAR Droid (BarDroidModelLodPixels): the unit from its model's coarse copy (false, nothing added: it has none)
+	bool AddToSubmissionLod(const CUnit* unit);
 	bool AddToSubmission(const CFeature* feature);
 
 	bool AddToSubmission(const UnitDef* unitDef, uint16_t paletteIndex);

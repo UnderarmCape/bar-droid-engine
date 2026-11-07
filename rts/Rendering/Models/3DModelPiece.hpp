@@ -28,6 +28,7 @@ struct S3DModelPiece {
 		vertices.clear();
 		indices.clear();
 		shatterIndices.clear();
+		barDroidLodIndices.clear();
 
 		parent = nullptr;
 		colvol = {};
@@ -121,6 +122,10 @@ public:
 	uint32_t vertIndex = ~0u; // global vertex number offset
 	uint32_t indxStart = ~0u; // global Index VBO offset
 	uint32_t indxCount = ~0u;
+
+	// BAR Droid (engine branch, BarDroidModelLodShare): a much coarser index list over the same vertices, for the model
+	// drawn small on the screen (empty: the piece's own list)
+	std::vector<uint32_t> barDroidLodIndices;
 protected:
 	std::vector<SVertexData> vertices;
 	std::vector<uint32_t> indices;

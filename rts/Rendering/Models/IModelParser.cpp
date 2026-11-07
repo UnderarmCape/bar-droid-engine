@@ -53,18 +53,84 @@ CONFIG(float, BarDroidModelSimplify).defaultValue(0.0f).minimumValue(0.0f).maxim
 	.description("BAR Droid: each model piece simplified at load to at most this share of its triangles (0: off)");
 CONFIG(float, BarDroidModelSimplifyError).defaultValue(1.0f).minimumValue(0.0f).maximumValue(100.0f)
 	.description("BAR Droid: the farthest a simplified model's surface may move, in elmos");
+// Kailil, 2026-11-06: "cut even near units, do an aggresive cut to every unit model. close and far". The simplifier
+// above stops early on BAR's models (separate panels and texture seams: 1.36M -> 0.93M triangles, about the same at 6
+// or 16 elmos). After it, every piece of 24 triangles or more is cut once more with meshoptimizer's sloppy simplifier,
+// which merges vertices by place, whatever the panels and seams, down to this share of its triangles: far fewer
+// triangles for every model and every pass, near and far, at the cost of rougher shapes and smeared texture seams.
+// The same vertices: only which triangles are drawn changes (online-safe, as above). 0: off.
+// (Kailil, after the sloppy cut at 0.35: "that looks awful lol. Too aggressive"): the gentler way past the separate
+// panels: the simplifier may drop a whole small separate part (bolts, vents, greebles) when it is smaller than the
+// error allows (meshoptimizer's Prune), the big shapes keep their outline.
+CONFIG(bool, BarDroidModelSimplifyPrune).defaultValue(false)
+	.description("BAR Droid: the simplification also drops small separate parts within its error (meshoptimizer's Prune)");
+CONFIG(float, BarDroidModelSimplifySloppy).defaultValue(0.0f).minimumValue(0.0f).maximumValue(1.0f)
+	.description("BAR Droid: after the simplification, each model piece cut to this share of its triangles by vertex clustering (0: off)");
+// And a coarse copy kept beside the model's own list, for the model drawn small on the screen (CUnitDrawerGL4,
+// BarDroidModelLodPixels): the sloppy cut to this share of what the model draws otherwise. 0: none.
+CONFIG(float, BarDroidModelLodShare).defaultValue(0.0f).minimumValue(0.0f).maximumValue(1.0f)
+	.description("BAR Droid: each model piece's coarse copy, for units small on the screen, at most this share of its triangles (0: none)");
 
 namespace {
 	std::atomic<uint64_t> barDroidTrisBefore{0};
 	std::atomic<uint64_t> barDroidTrisAfter{0};
 	std::atomic<uint32_t> barDroidModels{0};
+	std::atomic<uint64_t> barDroidLodTris{0};
+
+	bool BarDroidPieceOk(const std::vector<uint32_t>& indices, const std::vector<SVertexData>& vertices, size_t minTris)
+	{
+		// (small pieces keep theirs: little to gain, and their shapes are details; and a piece with an index past its
+		// vertices, which the simplifier would read out of bounds)
+		return indices.size() >= 3 * minTris && indices.size() % 3 == 0 && !vertices.empty()
+			&& *std::max_element(indices.begin(), indices.end()) < vertices.size();
+	}
+
+	// meshoptimizer's sloppy simplifier (vertex clustering, no error limit) to the share; false: left as it was
+	bool BarDroidSloppy(const std::vector<uint32_t>& indices, const std::vector<SVertexData>& vertices, float share,
+		std::vector<uint32_t>& out)
+	{
+		const size_t target = std::max<size_t>(3 * 8, static_cast<size_t>(indices.size() / 3 * share) * 3);
+		out.resize(indices.size());
+		float error = 0.0f;
+		const size_t n = meshopt_simplifySloppy(out.data(), indices.data(), indices.size(), &vertices[0].pos.x, vertices.size(),
+			sizeof(SVertexData), target, 1.0f, &error);
+		if (n < 3 || n >= indices.size())
+			return false;
+		out.resize(n);
+		meshopt_optimizeVertexCache(out.data(), out.data(), n, vertices.size());
+		return true;
+	}
+
+	void BarDroidCoarseCopy(S3DModel* model)
+	{
+		static const float share = configHandler->GetFloat("BarDroidModelLodShare");
+		if (share <= 0.0f || share >= 1.0f)
+			return;
+		uint64_t tris = 0;
+		std::vector<uint32_t> out;
+		for (S3DModelPiece* p : model->pieceObjects) {
+			const std::vector<uint32_t>& indices = p->GetIndicesVec();
+			const std::vector<SVertexData>& vertices = p->GetVerticesVec();
+			p->barDroidLodIndices.clear();
+			if (BarDroidPieceOk(indices, vertices, 24) && BarDroidSloppy(indices, vertices, share, out)) {
+				p->barDroidLodIndices = out;
+				tris += out.size() / 3;
+			} else {
+				tris += indices.size() / 3;
+			}
+		}
+		const uint64_t all = (barDroidLodTris += tris);
+		if (barDroidModels.load() % 50 == 1)
+			LOG("[BarDroid] coarse copies (share %.2f): %llu triangles", share, static_cast<unsigned long long>(all));
+	}
 
 	void BarDroidSimplifyModel(S3DModel* model)
 	{
 		static const float share = configHandler->GetFloat("BarDroidModelSimplify");
 		static const float maxError = configHandler->GetFloat("BarDroidModelSimplifyError");
-		if (share <= 0.0f || share >= 1.0f)
-			return;
+		static const float sloppy = configHandler->GetFloat("BarDroidModelSimplifySloppy");
+		static const unsigned flags = meshopt_SimplifyErrorAbsolute | (configHandler->GetBool("BarDroidModelSimplifyPrune") ? meshopt_SimplifyPrune : 0u);
+		const bool simplify = share > 0.0f && share < 1.0f, cut = sloppy > 0.0f && sloppy < 1.0f;
 
 		uint64_t before = 0;
 		uint64_t after = 0;
@@ -73,30 +139,30 @@ namespace {
 			std::vector<uint32_t>& indices = p->GetIndicesVec();
 			const std::vector<SVertexData>& vertices = p->GetVerticesVec();
 			before += indices.size() / 3;
-			// (small pieces keep theirs: little to gain, and their shapes are details)
-			// (and a piece with an index past its vertices, which the simplifier would read out of bounds)
-			if (indices.size() < 3 * 48 || indices.size() % 3 != 0 || vertices.empty()
-				|| *std::max_element(indices.begin(), indices.end()) >= vertices.size()) {
-				after += indices.size() / 3;
-				continue;
+			if (simplify && BarDroidPieceOk(indices, vertices, 48)) {
+				const size_t target = std::max<size_t>(3 * 16, static_cast<size_t>(indices.size() / 3 * share) * 3);
+				out.resize(indices.size());
+				const size_t n = meshopt_simplify(out.data(), indices.data(), indices.size(), &vertices[0].pos.x, vertices.size(),
+					sizeof(SVertexData), target, maxError, flags, nullptr);
+				if (n >= 3 && n < indices.size()) {
+					out.resize(n);
+					meshopt_optimizeVertexCache(out.data(), out.data(), n, vertices.size());
+					indices.swap(out);
+				}
 			}
-			const size_t target = std::max<size_t>(3 * 16, static_cast<size_t>(indices.size() / 3 * share) * 3);
-			out.resize(indices.size());
-			const size_t n = meshopt_simplify(out.data(), indices.data(), indices.size(), &vertices[0].pos.x, vertices.size(),
-				sizeof(SVertexData), target, maxError, meshopt_SimplifyErrorAbsolute, nullptr);
-			if (n >= 3 && n < indices.size()) {
-				out.resize(n);
-				meshopt_optimizeVertexCache(out.data(), out.data(), n, vertices.size());
+			if (cut && BarDroidPieceOk(indices, vertices, 24) && BarDroidSloppy(indices, vertices, sloppy, out))
 				indices.swap(out);
-			}
 			after += indices.size() / 3;
 		}
-		const uint64_t allBefore = (barDroidTrisBefore += before);
-		const uint64_t allAfter = (barDroidTrisAfter += after);
-		const uint32_t models = ++barDroidModels;
-		if (models % 50 == 1)
-			LOG("[BarDroid] models simplified (share %.2f, %.1f elmos): %u models, %llu -> %llu triangles", share, maxError,
-				models, static_cast<unsigned long long>(allBefore), static_cast<unsigned long long>(allAfter));
+		if (simplify || cut) {
+			const uint64_t allBefore = (barDroidTrisBefore += before);
+			const uint64_t allAfter = (barDroidTrisAfter += after);
+			const uint32_t models = ++barDroidModels;
+			if (models % 50 == 1)
+				LOG("[BarDroid] models simplified (share %.2f, %.1f elmos, then cut to %.2f): %u models, %llu -> %llu triangles",
+					share, maxError, sloppy, models, static_cast<unsigned long long>(allBefore), static_cast<unsigned long long>(allAfter));
+		}
+		BarDroidCoarseCopy(model);   // (from what the model draws otherwise)
 	}
 }
 #endif

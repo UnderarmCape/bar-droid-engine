@@ -75,6 +75,9 @@ CONFIG(bool, AdvUnitShading).deprecated(true);
 // BAR Droid (engine branch; Kailil, 2026-11-06: "a mobile specific way to do the opaque models so its ultra cheap"): a
 // measurement only, the ceiling of any cheaper unit drawing (impostors): the units' opaque pass left out whole.
 CONFIG(bool, BarDroidUnitModelsOff).defaultValue(false).description("BAR Droid, for measurements: units' opaque models not drawn");
+// BAR Droid: a unit smaller on the screen than this many pixels across is drawn from its model's coarse copy
+// (IModelParser.cpp BarDroidModelLodShare; 0: never). Drawing only.
+CONFIG(int, BarDroidModelLodPixels).defaultValue(0).minimumValue(0).description("BAR Droid: units under this many pixels across drawn from their model's coarse copy (0: never)");
 #endif
 
 /***********************************************************************/
@@ -138,6 +141,7 @@ void CUnitDrawer::InitStatic()
 	CModelDrawerBase<CUnitDrawerData, CUnitDrawer>::InitStatic();
 #ifdef BARDROID_SIM
 	barDroidModelsOff = configHandler->GetBool("BarDroidUnitModelsOff");
+	barDroidLodPixels = configHandler->GetInt("BarDroidModelLodPixels");
 #endif
 
 	LuaObjectDrawer::ReadLODScales(LUAOBJ_UNIT);
@@ -1680,6 +1684,11 @@ void CUnitDrawerGL4::DrawOpaqueObjects(int modelType, bool drawReflection, bool 
 	auto& smv = S3DModelVAO::GetInstance();
 	smv.Bind();
 
+	// (BarDroidModelLodPixels: a unit is under that many pixels across when 2r * viewSizeY / (2 d tan(fov/2)) is, i.e.
+	// when it is farther from the camera than r times this)
+	const CCamera* lodCam = CCameraHandler::GetActiveCamera();
+	const float lodScale = (barDroidLodPixels > 0) ? globalRendering->viewSizeY / (lodCam->GetTanHalfFov() * barDroidLodPixels) : 0.0f;
+
 	for (unsigned int i = 0, n = mdlRenderer.GetNumObjectBins(); i < n; i++) {
 		if (mdlRenderer.GetObjectBin(i).empty())
 			continue;
@@ -1696,6 +1705,12 @@ void CUnitDrawerGL4::DrawOpaqueObjects(int modelType, bool drawReflection, bool 
 			if (o->beingBuilt && o->unitDef->showNanoFrame) {
 				beingBuilt.emplace_back(o);
 				continue;
+			}
+
+			if (lodScale > 0.0f && o->model->barDroidLodCount > 0) {
+				const float far = o->model->radius * lodScale;
+				if ((o->drawMidPos - lodCam->GetPos()).SqLength() > far * far && smv.AddToSubmissionLod(o))
+					continue;
 			}
 
 			smv.AddToSubmission(o);

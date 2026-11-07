@@ -94,6 +94,9 @@ public:
 
 	uint32_t indxStart; //global VBO offset, size data
 	uint32_t indxCount;
+	// BAR Droid (engine branch): the coarse copy's indices (BarDroidModelLodShare; count 0: none)
+	uint32_t barDroidLodStart = ~0u;
+	uint32_t barDroidLodCount = 0u;
 
 	ModelType type;
 
