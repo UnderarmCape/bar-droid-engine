@@ -19,6 +19,7 @@
 
 #ifdef BARDROID_SIM
 #include <typeinfo>
+#include "Map/ReadMap.h"
 #include "Sim/MoveTypes/BarDroidMove.h"
 #include "Sim/MoveTypes/StaticMoveType.h"
 #endif
@@ -36,6 +37,7 @@ namespace {
 	// BAR Droid (BarDroidMovePrefetch): the units in the order the loop below meets them (gathered by the same view
 	// iteration just before it); the loop asks for unit k+AHEAD's lines at step k. Hints only.
 	static constexpr size_t BARDROID_GMS_AHEAD = 8;
+	static constexpr size_t BARDROID_GMS_NEAR = 3;
 	std::vector<CUnit*> barDroidGeneralOrder;
 
 	inline void BarDroidPrefetchGeneral(const CUnit* u)
@@ -43,7 +45,41 @@ namespace {
 		BarDroidMove::Prefetch(&u->pos);
 		BarDroidMove::Prefetch(&u->speed);
 		BarDroidMove::Prefetch(&u->moveType);
+		BarDroidMove::Prefetch(&u->unitDef);
 		BarDroidMove::Prefetch(u->amtMemBuffer);
+	}
+
+	// the corner heights of the square under (x, z): two rows (CGround::GetHeightReal / GetHeightAboveWater)
+	inline void BarDroidPrefetchHeights(float x, float z)
+	{
+		if (!(x >= 0.0f && z >= 0.0f))
+			return;
+
+		x = std::min(x, float3::maxxpos);
+		z = std::min(z, float3::maxzpos);
+
+		const int ix = std::min(int(x / SQUARE_SIZE), mapDims.mapx - 1);
+		const int iz = std::min(int(z / SQUARE_SIZE), mapDims.mapy - 1);
+		const float* heights = readMap->GetSharedCornerHeightMap(true);
+
+		BarDroidMove::Prefetch(&heights[(iz    ) * mapDims.mapxp1 + ix]);
+		BarDroidMove::Prefetch(&heights[(iz + 1) * mapDims.mapxp1 + ix]);
+	}
+
+	// an aircraft's ground samples (its lines asked for some units earlier): under it, and 40 frames of its velocity
+	// ahead (the strafing move type's elevator and rudder look there)
+	inline void BarDroidPrefetchAirGround(const CUnit* u)
+	{
+		const UnitDef* ud = u->unitDef;
+
+		if (ud == nullptr || !ud->canfly)
+			return;
+
+		const float3 p = u->pos;
+		const float4 s = u->speed;
+
+		BarDroidPrefetchHeights(p.x, p.z);
+		BarDroidPrefetchHeights(p.x + s.x * 40.0f, p.z + s.z * 40.0f);
 	}
 }
 #endif
@@ -73,6 +109,8 @@ void GeneralMoveSystem::Update() {
         view.each([barDroidPrefetch, barDroidStaticSkip, &k](GeneralMoveType& unitId){
             if (barDroidPrefetch && (k + BARDROID_GMS_AHEAD) < barDroidGeneralOrder.size())
                 BarDroidPrefetchGeneral(barDroidGeneralOrder[k + BARDROID_GMS_AHEAD]);
+            if (barDroidPrefetch && (k + BARDROID_GMS_NEAR) < barDroidGeneralOrder.size())
+                BarDroidPrefetchAirGround(barDroidGeneralOrder[k + BARDROID_GMS_NEAR]);
             ++k;
 
             CUnit* unit = unitHandler.GetUnit(unitId.value);

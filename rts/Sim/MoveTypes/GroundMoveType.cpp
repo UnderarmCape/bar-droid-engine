@@ -46,6 +46,7 @@
 
 #ifdef BARDROID_SIM
 #include <new>
+#include "Sim/Misc/GroundBlockingObjectMap.h"
 #include "Sim/MoveTypes/BarDroidMove.h"
 #endif
 
@@ -3709,7 +3710,10 @@ void CGroundMoveType::BarDroidPrefetchLines(const CUnit* u, int stage)
 	Prefetch(&u->heading);
 	Prefetch(&u->moveType);
 	Prefetch(&u->transporter);
+	Prefetch(&u->commandAI);
 	Prefetch(gmt);
+	Prefetch(&gmt->currWayPoint);
+	Prefetch(&gmt->nextWayPoint);
 
 	switch (stage) {
 		case BARDROID_STAGE_HEADING: {
@@ -3740,6 +3744,73 @@ void CGroundMoveType::BarDroidPrefetchLines(const CUnit* u, int stage)
 		default: {
 		} break;
 	}
+}
+
+void BarDroidMove::PrefetchCommandAI(const CUnit* u)
+{
+	const CCommandAI* cai = u->commandAI;
+
+	if (cai == nullptr)
+		return;
+
+	// (the std::deque's header: its start and finish iterators)
+	const char* q = reinterpret_cast<const char*>(&cai->commandQue);
+	Prefetch(q);
+	Prefetch(q + 64);
+}
+
+void BarDroidMove::PrefetchCommand(const CUnit* u)
+{
+	// (and SetNextWayPoint's two SquareIsBlocked: the waypoint squares' max height and blocking cell, which stalled it)
+	const CGroundMoveType* gmt = std::launder(reinterpret_cast<const CGroundMoveType*>(u->amtMemBuffer));
+	const float* maxHeights = readMap->GetMaxHeightMapSynced();
+
+	for (const float3& wp: {float3(gmt->GetCurrWayPoint()), float3(gmt->GetNextWayPoint())}) {
+		// (inside the map only; also keeps the float-to-int conversions defined)
+		if (!(wp.x >= 0.0f && wp.z >= 0.0f && wp.x < float3::maxxpos && wp.z < float3::maxzpos))
+			continue;
+
+		const int sx = int(wp.x / SQUARE_SIZE);
+		const int sz = int(wp.z / SQUARE_SIZE);
+
+		if (sx >= mapDims.mapx || sz >= mapDims.mapy)
+			continue;
+
+		Prefetch(&maxHeights[sz * mapDims.mapx + sx]);
+		Prefetch(groundBlockingObjectMap.BarDroidCellAddress(sz * mapDims.mapx + sx));
+	}
+
+	const CCommandAI* cai = u->commandAI;
+
+	if (cai == nullptr || cai->commandQue.empty())
+		return;
+
+	Prefetch(&cai->commandQue.front());
+}
+
+void BarDroidMove::PrefetchSpeedModCells(const CUnit* u)
+{
+	// CMoveMath::GetPosSpeedMod at the unit's square (ChangeSpeed, UpdatePos' centre-square terrain test): the type and
+	// slope maps (half resolution), the max heights and the 2D centre normals
+	const float x = u->pos.x;
+	const float z = u->pos.z;
+
+	if (!(x >= 0.0f && z >= 0.0f && x < float3::maxxpos && z < float3::maxzpos))
+		return;
+
+	const int sx = int(x / SQUARE_SIZE);
+	const int sz = int(z / SQUARE_SIZE);
+
+	if (sx >= mapDims.mapx || sz >= mapDims.mapy)
+		return;
+
+	const int sq = sx + sz * mapDims.mapx;
+	const int hsq = (sx >> 1) + (sz >> 1) * mapDims.hmapx;
+
+	Prefetch(&readMap->GetTypeMapSynced()[hsq]);
+	Prefetch(&readMap->GetSlopeMapSynced()[hsq]);
+	Prefetch(&readMap->GetMaxHeightMapSynced()[sq]);
+	Prefetch(&readMap->GetCenterNormals2DSynced()[sq]);
 }
 
 void CGroundMoveType::BarDroidPrefetchGround(const CUnit* u, int stage)

@@ -171,6 +171,11 @@ public:
 		return {GetArrCell(mapSquare), vecCells.data()};
 	}
 
+#ifdef BARDROID_SIM
+	// BAR Droid (BarDroidMovePrefetch): where a square's cell lies, for a prefetch (nothing is read)
+	const void* BarDroidCellAddress(unsigned int mapSquare) const { return (arrCells.data() + mapSquare); }
+#endif
+
 private:
 	bool CheckYard(const CSolidObject* yardUnit, const YardMapStatus& mask) const;
 
