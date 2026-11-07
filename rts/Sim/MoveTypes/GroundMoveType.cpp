@@ -1907,7 +1907,18 @@ float3 CGroundMoveType::GetObstacleAvoidanceDir(const float3& desiredDir) {
 		quadField.GetSolidsExact(qfQuery, avoider->pos, avoidanceRadius, 0xFFFFFFFF, CSolidObject::CSTATE_BIT_SOLIDOBJECTS);
 	}
 
-	for (const CSolidObject* avoidee: *qfQuery.solids) {
+	// (BarDroidMovePrefetch: the same avoidees in the same order; the one two on asked for its state and direction lines)
+	const std::vector<CSolidObject*>& barDroidAvoidees = *qfQuery.solids;
+	const bool barDroidPrefetch = BarDroidMove::prefetch;
+
+	for (size_t barDroidJ = 0, barDroidN = barDroidAvoidees.size(); barDroidJ < barDroidN; ++barDroidJ) {
+		const CSolidObject* avoidee = barDroidAvoidees[barDroidJ];
+
+		if (barDroidPrefetch && (barDroidJ + 2) < barDroidN) {
+			BarDroidMove::Prefetch(&barDroidAvoidees[barDroidJ + 2]->physicalState);
+			BarDroidMove::Prefetch(&barDroidAvoidees[barDroidJ + 2]->frontdir);
+		}
+
 		const MoveDef* avoideeMD = avoidee->moveDef;
 		const UnitDef* avoideeUD = nullptr;
 
@@ -2848,7 +2859,25 @@ void CGroundMoveType::HandleUnitCollisions(
 	qfQuery.threadOwner = curThread;
 	quadField.GetUnitsExact(qfQuery, collider->pos, searchRadius);
 
+#ifdef BARDROID_SIM
+	// BAR Droid (BarDroidMovePrefetch): the same collidees in the same order; the one two on asked for its lines first
+	// (state bits, transporter and move type, the (un)loading ids: far apart in CUnit)
+	const std::vector<CUnit*>& barDroidCollidees = *qfQuery.units;
+	const bool barDroidPrefetch = BarDroidMove::prefetch;
+
+	for (size_t barDroidJ = 0, barDroidN = barDroidCollidees.size(); barDroidJ < barDroidN; ++barDroidJ) {
+		CUnit* collidee = barDroidCollidees[barDroidJ];
+
+		if (barDroidPrefetch && (barDroidJ + 2) < barDroidN) {
+			const CUnit* next = barDroidCollidees[barDroidJ + 2];
+			BarDroidMove::Prefetch(&next->physicalState);
+			BarDroidMove::Prefetch(&next->transporter);
+			BarDroidMove::Prefetch(&next->loadingTransportId);
+			BarDroidMove::Prefetch(&next->unloadingTransportId);
+		}
+#else
 	for (CUnit* collidee: *qfQuery.units) {
+#endif
 		if (collidee == collider) continue;
 		if (collidee->IsSkidding()) continue;
 		if (collidee->IsFlying()) continue;

@@ -86,14 +86,22 @@ namespace {
 		size_t earlier = 0;
 	};
 
-	// prefetch the object k places ahead in a quad's list (the position and radius the tests read first)
+	// prefetch the object k places ahead in a quad's list: the lines the tests read (pos and radius are 32 bytes apart
+	// in CWorldObject, often on two lines; the solids queries test the physical and collidable state bits first)
 	template<typename T>
-	inline void BarDroidPrefetchAhead(const std::vector<T*>& objs, size_t i)
+	inline void BarDroidPrefetchAhead(const std::vector<T*>& objs, size_t i, bool stateBits = false)
 	{
 		static constexpr size_t AHEAD = 4;
 
-		if (BarDroidMove::prefetch && (i + AHEAD) < objs.size())
-			BarDroidMove::Prefetch(&objs[i + AHEAD]->pos);
+		if (!BarDroidMove::prefetch || (i + AHEAD) >= objs.size())
+			return;
+
+		const T* o = objs[i + AHEAD];
+		BarDroidMove::Prefetch(&o->pos);
+		BarDroidMove::Prefetch(&o->radius);
+
+		if (stateBits)
+			BarDroidMove::Prefetch(&o->physicalState);
 	}
 }
 #endif
@@ -1042,7 +1050,7 @@ void CQuadField::GetSolidsExact(
 
 		for (size_t i = 0, n = quadUnits.size(); i < n; ++i) {
 			CUnit* u = quadUnits[i];
-			BarDroidPrefetchAhead(quadUnits, i);
+			BarDroidPrefetchAhead(quadUnits, i, true);
 
 			if (dedup.SkipBefore(u))
 				continue;
@@ -1061,7 +1069,7 @@ void CQuadField::GetSolidsExact(
 
 		for (size_t i = 0, n = quadFeatures.size(); i < n; ++i) {
 			CFeature* f = quadFeatures[i];
-			BarDroidPrefetchAhead(quadFeatures, i);
+			BarDroidPrefetchAhead(quadFeatures, i, true);
 
 			if (dedup.SkipBefore(f))
 				continue;
@@ -1146,7 +1154,7 @@ void CQuadField::BarDroidGetSolidUnitsExact(
 
 		for (size_t i = 0, n = quadUnits.size(); i < n; ++i) {
 			CUnit* u = quadUnits[i];
-			BarDroidPrefetchAhead(quadUnits, i);
+			BarDroidPrefetchAhead(quadUnits, i, true);
 
 			if (dedup.SkipBefore(u))
 				continue;
