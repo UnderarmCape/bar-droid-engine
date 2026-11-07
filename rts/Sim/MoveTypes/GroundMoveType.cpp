@@ -48,6 +48,9 @@
 #include <new>
 #include "Sim/Misc/GroundBlockingObjectMap.h"
 #include "Sim/MoveTypes/BarDroidMove.h"
+#ifdef SYNCCHECK
+#include "System/Sync/SyncChecker.h"
+#endif
 #endif
 
 // #define PATHING_DEBUG
@@ -3770,9 +3773,33 @@ void CGroundMoveType::BarDroidPrefetchLines(const CUnit* u, int stage)
 			Prefetch(&gmt->earlyCurrWayPoint);
 			Prefetch(&gmt->oldPos);
 		} break;
+		case BARDROID_STAGE_REPLAY: {
+			Prefetch(&gmt->barDroidSyncRecord);
+			Prefetch(&gmt->barDroidMoved);
+		} break;
 		default: {
 		} break;
 	}
+}
+
+void CGroundMoveType::BarDroidUpdateRecorded()
+{
+#ifdef SYNCCHECK
+	barDroidSyncRecord.clear();
+	CSyncChecker::BarDroidSetRecorder(&barDroidSyncRecord);
+	barDroidMoved = Update();
+	CSyncChecker::BarDroidSetRecorder(nullptr);
+#else
+	barDroidMoved = Update();
+#endif
+}
+
+bool CGroundMoveType::BarDroidReplayRecorded()
+{
+#ifdef SYNCCHECK
+	CSyncChecker::BarDroidReplay(barDroidSyncRecord);
+#endif
+	return barDroidMoved;
 }
 
 void BarDroidMove::PrefetchCommandAI(const CUnit* u)
@@ -3845,6 +3872,18 @@ void BarDroidMove::PrefetchSpeedModCells(const CUnit* u)
 void CGroundMoveType::BarDroidPrefetchGround(const CUnit* u, int stage)
 {
 	using BarDroidMove::Prefetch;
+
+	if (stage == BARDROID_STAGE_REPLAY) {
+		// (no ground: the recorded synced writes, read by the replay)
+		const CGroundMoveType* gmt = std::launder(reinterpret_cast<const CGroundMoveType*>(u->amtMemBuffer));
+		const std::vector<unsigned char>& record = gmt->barDroidSyncRecord;
+
+		if (!record.empty()) {
+			Prefetch(record.data());
+			Prefetch(record.data() + record.size() - 1);
+		}
+		return;
+	}
 
 	// (UpdatePreCollisions reads no ground map here: OnSlope(1) returns before the slope map for every unit whose
 	// slideTolerance is under 1, BAR's; a prefetch there was a wasted page walk)

@@ -5,6 +5,9 @@
 
 #include <array>
 #include <tuple>
+#ifdef BARDROID_SIM
+#include <vector>
+#endif
 
 #include "MoveType.h"
 #include "Sim/Path/IPathController.h"
@@ -150,7 +153,14 @@ public:
 #ifdef BARDROID_SIM
 	// BAR Droid (BarDroidMovePrefetch, BarDroidMove.h): the single-threaded loops of GroundMoveSystem::Update ask for a
 	// unit's data a few units ahead. Hints only: nothing is written, and what is fetched changes no result.
-	enum BarDroidStage { BARDROID_STAGE_HEADING = 0, BARDROID_STAGE_PRECOLLISIONS = 1, BARDROID_STAGE_UPDATE = 2 };
+	enum BarDroidStage { BARDROID_STAGE_HEADING = 0, BARDROID_STAGE_PRECOLLISIONS = 1, BARDROID_STAGE_UPDATE = 2, BARDROID_STAGE_REPLAY = 3 };
+
+	// BAR Droid (BarDroidMoveParallelUpdate, GroundMoveSystem's stage 5): Update() on any thread, its synced writes
+	// recorded (CSyncChecker); then, on the main thread in the stock loop's order, those writes hashed and Update's
+	// answer returned. Update touches only its own unit (no Lua, no scripts, no other unit), so the units can run in any
+	// order and on any thread; the checksum sees the stock writes in the stock order.
+	void BarDroidUpdateRecorded();
+	bool BarDroidReplayRecorded();
 	// the unit's and its ground move type's lines that stage reads first (addresses only)
 	static void BarDroidPrefetchLines(const CUnit* unit, int stage);
 	// the ground cells (normals, slopes or heights) the stage reads at the unit's position (reads the position, which
@@ -317,6 +327,12 @@ private:
 	bool positionStuck = false;
 	bool forceStaticObjectCheck = false;
 	bool avoidingUnits = false;
+
+#ifdef BARDROID_SIM
+	// (BarDroidMoveParallelUpdate; not saved: filled and used within one frame's stage 5)
+	std::vector<unsigned char> barDroidSyncRecord;
+	bool barDroidMoved = false;
+#endif
 };
 
 #endif // GROUNDMOVETYPE_H

@@ -36,6 +36,9 @@ namespace BarDroidMove {
 	// BarDroidMoveRawSearch: MoveDef::DoRawSearch and TestMoveSquareRange call the speed-mod function directly instead
 	// of through a std::function made for every call.
 	extern bool rawSearch;
+	// BarDroidMoveParallelUpdate: GroundMoveSystem's stage 5 (each ground unit's final Update) on every thread, each
+	// unit's synced writes recorded and hashed afterwards in the stock order (CSyncChecker::BarDroidReplay).
+	extern bool parallelUpdate;
 
 	void ReadConfig();
 

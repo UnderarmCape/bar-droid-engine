@@ -7,6 +7,9 @@
 
 #include <cassert>
 #include <array>
+#ifdef BARDROID_SIM
+#include <vector>
+#endif
 
 static constexpr size_t MAX_SYNC_HISTORY = 2500000; // 10MB, ~= 10 seconds of typical midgame
 static constexpr size_t MAX_SYNC_HISTORY_FRAMES = 1000;
@@ -40,6 +43,13 @@ class CSyncChecker {
 		#ifdef BARDROID_SIM
 		// BAR Droid: BarDroidSyncFast (set once a frame by BarDroidMove::ReadConfig; SyncChecker.cpp)
 		static bool barDroidSyncFast;
+
+		// BAR Droid (BarDroidMoveParallelUpdate): a thread whose recorder is set (a thread-local pointer, set only
+		// inside the parallel tasks that want it) appends each synced write's bytes to it instead of hashing them;
+		// BarDroidReplay later hashes a record's writes, in their order, through the same Sync calls. Played back in
+		// the order the stock serial loop wrote them, the checksum (and the sync history) is the stock one.
+		static void BarDroidSetRecorder(std::vector<unsigned char>* recorder);
+		static void BarDroidReplay(const std::vector<unsigned char>& record);
 		#endif
 		#ifdef SYNC_HISTORY
 		static std::tuple<unsigned, unsigned, unsigned*> GetFrameHistory(unsigned rewindFrames);

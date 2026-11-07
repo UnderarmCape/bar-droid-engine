@@ -31,6 +31,7 @@ CONFIG(bool, BarDroidMovePrefetch).defaultValue(true).description("BAR Droid: th
 CONFIG(bool, BarDroidMoveStaticSkip).defaultValue(true).description("BAR Droid: the general move system skips the empty Update of static move types (exact); 0: as stock");
 CONFIG(bool, BarDroidMoveAvoid).defaultValue(true).description("BAR Droid: obstacle avoidance queries units only (it skipped every feature) (exact); 0: as stock");
 CONFIG(bool, BarDroidMoveRawSearch).defaultValue(true).description("BAR Droid: raw path searches call the speed-mod function directly, without a std::function (exact); 0: as stock");
+CONFIG(bool, BarDroidMoveParallelUpdate).defaultValue(true).description("BAR Droid: the ground units' final position update on every thread, their synced writes hashed afterwards in the stock order (exact); 0: as stock");
 CONFIG(bool, BarDroidSyncFast).defaultValue(true).description("BAR Droid: the sync checker hashes 1-16 byte writes with xxHash's short-input function inlined (the same hash); 0: as stock");
 
 namespace BarDroidMove {
@@ -41,6 +42,7 @@ namespace BarDroidMove {
 	bool staticSkip = true;
 	bool avoid = true;
 	bool rawSearch = true;
+	bool parallelUpdate = true;
 
 	void ReadConfig() {
 		const bool all = configHandler->GetBool("BarDroidMoveAll");
@@ -52,6 +54,7 @@ namespace BarDroidMove {
 		staticSkip = all && configHandler->GetBool("BarDroidMoveStaticSkip");
 		avoid      = all && configHandler->GetBool("BarDroidMoveAvoid");
 		rawSearch  = all && configHandler->GetBool("BarDroidMoveRawSearch");
+		parallelUpdate = all && configHandler->GetBool("BarDroidMoveParallelUpdate");
 	#ifdef SYNCCHECK
 		CSyncChecker::barDroidSyncFast = all && configHandler->GetBool("BarDroidSyncFast");
 	#endif
@@ -356,6 +359,36 @@ void GroundMoveSystem::Update() {
         auto view = Sim::registry.view<GroundMoveType>();
 #ifdef BARDROID_SIM
         size_t k = 0;
+
+        if (BarDroidMove::parallelUpdate) {
+            // BAR Droid (BarDroidMoveParallelUpdate): each unit's Update touches only its own unit (its waypoints, its
+            // position and speed, the ground under it; no Lua, no unit script, and UnitMoved only feeds the ground
+            // decals' tracks), so the units run on every thread with their synced writes recorded; then, in this
+            // loop's stock order, each unit's writes are hashed (the stock checksum) and UnitMoved is sent.
+            for_mt(0, view.size(), [&view, barDroidPrefetch](const int i){
+                BARDROID_PREFETCH_MT(i);
+                CUnit* unit = BARDROID_UNIT_AT(i);
+                static_cast<CGroundMoveType*>(unit->moveType)->BarDroidUpdateRecorded();
+            });
+
+            if (barDroidPrefetch) {
+                barDroidOrder.clear();
+                view.each([](GroundMoveType& unitId){ barDroidOrder.push_back(unitHandler.GetUnit(unitId.value)); });
+                BarDroidPrefetchStart(CGroundMoveType::BARDROID_STAGE_REPLAY);
+            }
+
+            view.each([barDroidPrefetch, &k](GroundMoveType& unitId){
+                if (barDroidPrefetch)
+                    BarDroidPrefetchStep(k++, CGroundMoveType::BARDROID_STAGE_REPLAY);
+
+                CUnit* unit = unitHandler.GetUnit(unitId.value);
+                CGroundMoveType* moveType = static_cast<CGroundMoveType*>(unit->moveType);
+
+                if (moveType->BarDroidReplayRecorded())
+                    eventHandler.UnitMoved(unit);
+            });
+            return;
+        }
 
         if (barDroidPrefetch) {
             barDroidOrder.clear();
