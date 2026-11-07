@@ -227,6 +227,9 @@ static inline luaContextData* GetLuaContextData(const lua_State* L)
 }
 
 static inline lua_State* LUA_OPEN(luaContextData* lcd) {
+#if defined(BARDROID_SIM) && !defined(UNITSYNC) && !defined(DEDICATED) && !defined(BUILDING_AI)
+	BarDroidLuaReadConfig(true); // (the Lua VM's switches, LuaUser.h, before the new state runs anything)
+#endif
 	return lua_newstate(spring_lua_alloc, lcd); // we want to use our own memory allocator
 }
 

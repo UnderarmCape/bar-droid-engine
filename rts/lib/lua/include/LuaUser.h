@@ -35,4 +35,33 @@ extern void spring_lua_format(float f, const char* fmt, char *buf);
 extern int spring_lua_unsynced_rand(lua_State* L);
 extern int spring_lua_unsynced_srand(lua_State* L);
 
+#ifdef BARDROID_SIM
+// BAR Droid (engine branch): runtime switches for faster code paths of the Lua VM, each computing exactly what stock
+// computes (same values, same table layouts and iteration order, same allocations, same error messages); 0 = stock.
+// Read from the engine's config (BarDroidLuaReadConfig, LuaHandle.cpp) as each Lua state is created (LUA_OPEN) and once
+// a drawn frame (CLuaHandle::Update), so Spring.SetConfigInt switches them in a running game; LuaUser.cpp holds them.
+//   vm:           BarDroidLuaVM, the interpreter loop with computed-goto dispatch (luaV_execute_bd); the next four
+//                 work inside it only
+//   fastTable:    BarDroidLuaFastTable, table reads/writes in the VM without the luaV_gettable/luaH_get calls
+//   fastCall:     BarDroidLuaFastCall, Lua-to-Lua and Lua-to-C calls and returns set up in the VM (no luaD_precall /
+//                 luaD_poscall calls) when no stack or CallInfo growth and no hook is involved
+//   fastCompare:  BarDroidLuaFastCompare, ==, <, <= of two numbers (and == of strings, booleans, nil) in the VM
+//   prefetch:     BarDroidLuaPrefetch, cache prefetches (no other effect): a called function's code, constants and
+//                 first upvalues, and a function value as it is loaded into a register
+//   strHash:      BarDroidLuaStrHash, string interning compares the stored hash before length and bytes
+//   allocRelaxed: BarDroidLuaAllocRelaxed, the allocator's byte and call counters with one relaxed atomic add each
+struct BarDroidLuaSwitches {
+	int vm;
+	int fastTable;
+	int fastCall;
+	int fastCompare;
+	int prefetch;
+	int strHash;
+	int allocRelaxed;
+};
+extern BarDroidLuaSwitches barDroidLua;
+// (LuaHandle.cpp; engine builds only)
+extern void BarDroidLuaReadConfig(bool force);
+#endif
+
 #endif // SPRING_LUA_USER_H

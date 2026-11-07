@@ -32,5 +32,13 @@ LUAI_FUNC void luaV_settable (lua_State *L, const TValue *t, TValue *key,
                                             StkId val);
 LUAI_FUNC void luaV_execute (lua_State *L, int nexeccalls);
 LUAI_FUNC void luaV_concat (lua_State *L, int total, int last);
+#ifdef BARDROID_SIM
+/* BAR Droid (end of lvm.cpp): luaV_execute with computed-goto dispatch and the fast paths of LuaUser.h's barDroidLua,
+   the same results. luaV_run (luaD_call and resume, ldo.cpp): the interpreter barDroidLua.vm picks; luaV_execute
+   itself stays unchanged (gcc keys PGO profiles by function name and control flow: it keeps its profile) */
+LUAI_FUNC void luaV_execute_bd (lua_State *L, int nexeccalls);
+#define luaV_run(L,n) \
+	{ if (barDroidLua.vm) luaV_execute_bd(L, n); else luaV_execute(L, n); }
+#endif
 
 #endif
