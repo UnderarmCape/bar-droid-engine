@@ -138,6 +138,16 @@ private:
 	GLsync barDroidRingFence[2] = {};
 	bool barDroidRingFailed = false;
 	bool barDroidOnRing = false;
+	// (BarDroidInstanceOrphan 4) batched instances in a pool of small buffers, each written only once idle for 4 drawn
+	// frames: never one the current render pass reads; single-instance draws take theirs as a constant attribute
+	struct BarDroidPoolBuf { GLuint id = 0; uint32_t bytes = 0; uint32_t frame = 0; };
+	std::vector<BarDroidPoolBuf> barDroidPool;
+	size_t barDroidPoolNext = 0;
+	GLuint barDroidPointedAt = 0; // (0: instVBO, as CreateVAO points it)
+	bool barDroidInstArray = true;
+	GLuint BarDroidPoolWrite(const void* data, uint32_t bytes);
+	void BarDroidPointAt(GLuint buf);
+	void BarDroidInstanceArray(bool on);
 #endif
 private:
 	static std::unique_ptr<S3DModelVAO> instance;
