@@ -78,6 +78,17 @@
 CONFIG(float, LuaGarbageCollectionMemLoadMult).defaultValue(1.33f).minimumValue(1.0f).maximumValue(100.0f).description("How much the amount of Lua memory in use increases the rate of garbage collection.");
 CONFIG(float, LuaGarbageCollectionRunTimeMult).defaultValue(5.0f).minimumValue(1.0f).description("How many milliseconds the garbage collected can run for in each GC cycle");
 
+#ifdef BARDROID_SIM
+// BAR Droid (engine branch): the Lua VM's fast paths (LuaUser.h, barDroidLua); each gives the results stock gives, 0 = stock
+CONFIG(int, BarDroidLuaVM).defaultValue(1).minimumValue(0).maximumValue(1).description("BAR Droid: Lua's interpreter loop with computed-goto dispatch (needed by the four switches after it); 0: stock luaV_execute");
+CONFIG(int, BarDroidLuaFastTable).defaultValue(1).minimumValue(0).maximumValue(1).description("BAR Droid: table reads and writes inside the VM without the luaV_gettable/luaH_get calls (same lookups); 0: stock");
+CONFIG(int, BarDroidLuaFastCall).defaultValue(1).minimumValue(0).maximumValue(1).description("BAR Droid: calls and returns set up inside the VM (no luaD_precall/luaD_poscall calls) when no growth or hook is involved; 0: stock");
+CONFIG(int, BarDroidLuaFastCompare).defaultValue(1).minimumValue(0).maximumValue(1).description("BAR Droid: ==, <, <= of two numbers (== of strings, booleans, nil) inside the VM; 0: stock");
+CONFIG(int, BarDroidLuaPrefetch).defaultValue(1).minimumValue(0).maximumValue(1).description("BAR Droid: cache prefetches of a called Lua function's code, constants and upvalues and of function values (no other effect); 0: none");
+CONFIG(int, BarDroidLuaStrHash).defaultValue(1).minimumValue(0).maximumValue(1).description("BAR Droid: string interning compares the stored hash before length and bytes; 0: stock");
+CONFIG(int, BarDroidLuaAllocRelaxed).defaultValue(1).minimumValue(0).maximumValue(1).description("BAR Droid: the Lua allocator's byte and call counters with one relaxed atomic add each (same values); 0: stock");
+#endif
+
 
 static spring::unsynced_set<const luaContextData*>    SYNCED_LUAHANDLE_CONTEXTS;
 static spring::unsynced_set<const luaContextData*>  UNSYNCED_LUAHANDLE_CONTEXTS;
@@ -2671,6 +2682,9 @@ void CLuaHandle::UnsyncedHeightMapUpdate(const SRectangle& rect)
 void CLuaHandle::Update()
 {
 	RECOIL_DETAILED_TRACY_ZONE;
+#ifdef BARDROID_SIM
+	BarDroidLuaReadConfig(false); // (once a drawn frame, by the first handle)
+#endif
 	LUA_CALL_IN_CHECK(L);
 	luaL_checkstack(L, 2, __func__);
 	static const LuaHashString cmdStr(__func__);
@@ -4761,3 +4775,32 @@ void CLuaHandle::Cob2LuaBatch(const LuaHashString& name, std::vector<CCobDeferre
 
 /******************************************************************************/
 /******************************************************************************/
+
+#ifdef BARDROID_SIM
+// The Lua VM's switches (LuaUser.h) from the engine's config.
+// force: at a Lua state's creation (LUA_OPEN: handles and parsers, the loading's Lua too); else once a drawn frame
+void BarDroidLuaReadConfig(bool force)
+{
+	static unsigned int lastDrawFrame = ~0u;
+
+	if (configHandler == nullptr)
+		return;
+
+	if (!force) {
+		if (globalRendering == nullptr || globalRendering->drawFrame == lastDrawFrame)
+			return;
+
+		lastDrawFrame = globalRendering->drawFrame;
+	}
+
+	BarDroidLuaSwitches s;
+	s.vm           = configHandler->GetInt("BarDroidLuaVM");
+	s.fastTable    = configHandler->GetInt("BarDroidLuaFastTable");
+	s.fastCall     = configHandler->GetInt("BarDroidLuaFastCall");
+	s.fastCompare  = configHandler->GetInt("BarDroidLuaFastCompare");
+	s.prefetch     = configHandler->GetInt("BarDroidLuaPrefetch");
+	s.strHash      = configHandler->GetInt("BarDroidLuaStrHash");
+	s.allocRelaxed = configHandler->GetInt("BarDroidLuaAllocRelaxed");
+	barDroidLua = s;
+}
+#endif
