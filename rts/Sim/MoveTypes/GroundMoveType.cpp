@@ -48,6 +48,9 @@
 #include <new>
 #include "Sim/Misc/GroundBlockingObjectMap.h"
 #include "Sim/MoveTypes/BarDroidMove.h"
+#ifdef SYNCCHECK
+#include "System/Sync/SyncChecker.h"
+#endif
 #endif
 
 // #define PATHING_DEBUG
@@ -1907,7 +1910,18 @@ float3 CGroundMoveType::GetObstacleAvoidanceDir(const float3& desiredDir) {
 		quadField.GetSolidsExact(qfQuery, avoider->pos, avoidanceRadius, 0xFFFFFFFF, CSolidObject::CSTATE_BIT_SOLIDOBJECTS);
 	}
 
-	for (const CSolidObject* avoidee: *qfQuery.solids) {
+	// (BarDroidMovePrefetch: the same avoidees in the same order; the one two on asked for its state and direction lines)
+	const std::vector<CSolidObject*>& barDroidAvoidees = *qfQuery.solids;
+	const bool barDroidPrefetch = BarDroidMove::prefetch;
+
+	for (size_t barDroidJ = 0, barDroidN = barDroidAvoidees.size(); barDroidJ < barDroidN; ++barDroidJ) {
+		const CSolidObject* avoidee = barDroidAvoidees[barDroidJ];
+
+		if (barDroidPrefetch && (barDroidJ + 2) < barDroidN) {
+			BarDroidMove::Prefetch(&barDroidAvoidees[barDroidJ + 2]->physicalState);
+			BarDroidMove::Prefetch(&barDroidAvoidees[barDroidJ + 2]->frontdir);
+		}
+
 		const MoveDef* avoideeMD = avoidee->moveDef;
 		const UnitDef* avoideeUD = nullptr;
 
@@ -2848,7 +2862,25 @@ void CGroundMoveType::HandleUnitCollisions(
 	qfQuery.threadOwner = curThread;
 	quadField.GetUnitsExact(qfQuery, collider->pos, searchRadius);
 
+#ifdef BARDROID_SIM
+	// BAR Droid (BarDroidMovePrefetch): the same collidees in the same order; the one two on asked for its lines first
+	// (state bits, transporter and move type, the (un)loading ids: far apart in CUnit)
+	const std::vector<CUnit*>& barDroidCollidees = *qfQuery.units;
+	const bool barDroidPrefetch = BarDroidMove::prefetch;
+
+	for (size_t barDroidJ = 0, barDroidN = barDroidCollidees.size(); barDroidJ < barDroidN; ++barDroidJ) {
+		CUnit* collidee = barDroidCollidees[barDroidJ];
+
+		if (barDroidPrefetch && (barDroidJ + 2) < barDroidN) {
+			const CUnit* next = barDroidCollidees[barDroidJ + 2];
+			BarDroidMove::Prefetch(&next->physicalState);
+			BarDroidMove::Prefetch(&next->transporter);
+			BarDroidMove::Prefetch(&next->loadingTransportId);
+			BarDroidMove::Prefetch(&next->unloadingTransportId);
+		}
+#else
 	for (CUnit* collidee: *qfQuery.units) {
+#endif
 		if (collidee == collider) continue;
 		if (collidee->IsSkidding()) continue;
 		if (collidee->IsFlying()) continue;
@@ -3741,9 +3773,33 @@ void CGroundMoveType::BarDroidPrefetchLines(const CUnit* u, int stage)
 			Prefetch(&gmt->earlyCurrWayPoint);
 			Prefetch(&gmt->oldPos);
 		} break;
+		case BARDROID_STAGE_REPLAY: {
+			Prefetch(&gmt->barDroidSyncRecord);
+			Prefetch(&gmt->barDroidMoved);
+		} break;
 		default: {
 		} break;
 	}
+}
+
+void CGroundMoveType::BarDroidUpdateRecorded()
+{
+#ifdef SYNCCHECK
+	barDroidSyncRecord.clear();
+	CSyncChecker::BarDroidSetRecorder(&barDroidSyncRecord);
+	barDroidMoved = Update();
+	CSyncChecker::BarDroidSetRecorder(nullptr);
+#else
+	barDroidMoved = Update();
+#endif
+}
+
+bool CGroundMoveType::BarDroidReplayRecorded()
+{
+#ifdef SYNCCHECK
+	CSyncChecker::BarDroidReplay(barDroidSyncRecord);
+#endif
+	return barDroidMoved;
 }
 
 void BarDroidMove::PrefetchCommandAI(const CUnit* u)
@@ -3816,6 +3872,18 @@ void BarDroidMove::PrefetchSpeedModCells(const CUnit* u)
 void CGroundMoveType::BarDroidPrefetchGround(const CUnit* u, int stage)
 {
 	using BarDroidMove::Prefetch;
+
+	if (stage == BARDROID_STAGE_REPLAY) {
+		// (no ground: the recorded synced writes, read by the replay)
+		const CGroundMoveType* gmt = std::launder(reinterpret_cast<const CGroundMoveType*>(u->amtMemBuffer));
+		const std::vector<unsigned char>& record = gmt->barDroidSyncRecord;
+
+		if (!record.empty()) {
+			Prefetch(record.data());
+			Prefetch(record.data() + record.size() - 1);
+		}
+		return;
+	}
 
 	// (UpdatePreCollisions reads no ground map here: OnSlope(1) returns before the slope map for every unit whose
 	// slideTolerance is under 1, BAR's; a prefetch there was a wasted page walk)
