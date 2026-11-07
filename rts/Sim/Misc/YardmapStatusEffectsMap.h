@@ -41,8 +41,35 @@ public:
 	bool AreAllFlagsSet(int x, int z, uint8_t flags) const { return (GetMapState(x, z) & flags) == flags; }
 	bool AreAnyFlagsSet(int x, int z, uint8_t flags) const { return (GetMapState(x, z) & flags) != 0; }
 
+#ifdef BARDROID_SIM
+	// BAR Droid (BarDroidMoveExitOnly): the same writes, and each tile's count of exit-only squares kept with them
+	void SetFlags  (int x, int z, uint8_t flags) { BarDroidChange(x, z, flags, true ); }
+	void ClearFlags(int x, int z, uint8_t flags) { BarDroidChange(x, z, flags, false); }
+
+	// false if no square of the tiles covering the clamped rectangle [xmin, xmax] x [zmin, zmax] is exit-only (then
+	// no square inside it is)
+	bool BarDroidAnyExitOnly(int xmin, int xmax, int zmin, int zmax) const {
+		if (barDroidExitOnlyCounts.empty() || barDroidExitOnlyCounts.size() != stateMap.size())
+			return true;
+
+		const int tx0 = std::clamp(xmin, 0, mapDims.mapxm1) / TILE_SIZE;
+		const int tx1 = std::clamp(xmax, 0, mapDims.mapxm1) / TILE_SIZE;
+		const int tz0 = std::clamp(zmin, 0, mapDims.mapym1) / TILE_SIZE;
+		const int tz1 = std::clamp(zmax, 0, mapDims.mapym1) / TILE_SIZE;
+
+		for (int tz = tz0; tz <= tz1; ++tz) {
+			for (int tx = tx0; tx <= tx1; ++tx) {
+				if (barDroidExitOnlyCounts[tz * tileStride + tx] != 0)
+					return true;
+			}
+		}
+
+		return false;
+	}
+#else
 	void SetFlags  (int x, int z, uint8_t flags) { GetMapState(x, z) |=  flags; }
 	void ClearFlags(int x, int z, uint8_t flags) { GetMapState(x, z) &= ~flags; }
+#endif
 
 	void ClearTile(int tileId);
 
@@ -71,6 +98,34 @@ private:
 
 	typedef std::vector<Tile> TileMapType;
 	TileMapType stateMap;
+
+#ifdef BARDROID_SIM
+	void BarDroidChange(int x, int z, uint8_t flags, bool set) {
+		const int cx = std::clamp(x, 0, mapDims.mapxm1);
+		const int cz = std::clamp(z, 0, mapDims.mapym1);
+		const int tileId = (cz / TILE_SIZE) * tileStride + (cx / TILE_SIZE);
+
+		uint8_t& state = GetMapState(x, z);
+		const bool wasExitOnly = ((state & EXIT_ONLY) != 0);
+
+		if (set)
+			state |= flags;
+		else
+			state &= ~flags;
+
+		const bool isExitOnly = ((state & EXIT_ONLY) != 0);
+
+		if (wasExitOnly == isExitOnly || static_cast<size_t>(tileId) >= barDroidExitOnlyCounts.size())
+			return;
+
+		barDroidExitOnlyCounts[tileId] += (isExitOnly? 1: -1);
+	}
+
+	void BarDroidRecountExitOnly();
+
+	// per tile: how many of its squares have EXIT_ONLY set (not saved: counted again from stateMap after a load)
+	std::vector<uint8_t> barDroidExitOnlyCounts;
+#endif
 };
 
 extern YardmapStatusEffectsMap yardmapStatusEffectsMap;

@@ -147,6 +147,17 @@ public:
 	void OwnerMayBeStuck() { forceStaticObjectCheck = true; };
 	void SetMtJobId(int _jobId) { jobId = _jobId; }
 
+#ifdef BARDROID_SIM
+	// BAR Droid (BarDroidMovePrefetch, BarDroidMove.h): the single-threaded loops of GroundMoveSystem::Update ask for a
+	// unit's data a few units ahead. Hints only: nothing is written, and what is fetched changes no result.
+	enum BarDroidStage { BARDROID_STAGE_HEADING = 0, BARDROID_STAGE_PRECOLLISIONS = 1, BARDROID_STAGE_UPDATE = 2 };
+	// the unit's and its ground move type's lines that stage reads first (addresses only)
+	static void BarDroidPrefetchLines(const CUnit* unit, int stage);
+	// the ground cells (normals, slopes or heights) the stage reads at the unit's position (reads the position, which
+	// BarDroidPrefetchLines asked for some units earlier)
+	static void BarDroidPrefetchGround(const CUnit* unit, int stage);
+#endif
+
 private:
 	float3 GetObstacleAvoidanceDir(const float3& desiredDir);
 	float3 Here() const;
