@@ -3,6 +3,8 @@
 #pragma once
 
 #ifdef BARDROID_SIM
+class CUnit;
+
 // BAR Droid (engine branch bardroid/move): unit movement and collision speed-ups. Each one is exact: the same objects
 // in the same order, the same float operations in the same order, the same synced writes in the same order as the
 // stock code, so the simulation and its checksums stay bit-identical. Each has its own springsettings switch (default
@@ -38,5 +40,12 @@ namespace BarDroidMove {
 	void ReadConfig();
 
 	static inline void Prefetch(const void* p) { __builtin_prefetch(p); }
+
+	// (BarDroidMovePrefetch, the traversal plans' parallel section; GroundMoveType.cpp) FollowPath's
+	// UNIT_HAS_MOVE_CMD reads the unit's first queued command: a cache miss for nearly every moving unit. Read the
+	// unit's commandAI pointer and prefetch its queue's header; read the queue's front and prefetch that command.
+	// Reads only (as FollowPath's own, in the same section, where no thread changes a command queue).
+	void PrefetchCommandAI(const CUnit* unit);
+	void PrefetchCommand(const CUnit* unit);
 }
 #endif

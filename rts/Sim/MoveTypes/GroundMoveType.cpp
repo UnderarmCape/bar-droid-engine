@@ -46,6 +46,7 @@
 
 #ifdef BARDROID_SIM
 #include <new>
+#include "Sim/Misc/GroundBlockingObjectMap.h"
 #include "Sim/MoveTypes/BarDroidMove.h"
 #endif
 
@@ -3709,7 +3710,10 @@ void CGroundMoveType::BarDroidPrefetchLines(const CUnit* u, int stage)
 	Prefetch(&u->heading);
 	Prefetch(&u->moveType);
 	Prefetch(&u->transporter);
+	Prefetch(&u->commandAI);
 	Prefetch(gmt);
+	Prefetch(&gmt->currWayPoint);
+	Prefetch(&gmt->nextWayPoint);
 
 	switch (stage) {
 		case BARDROID_STAGE_HEADING: {
@@ -3740,6 +3744,48 @@ void CGroundMoveType::BarDroidPrefetchLines(const CUnit* u, int stage)
 		default: {
 		} break;
 	}
+}
+
+void BarDroidMove::PrefetchCommandAI(const CUnit* u)
+{
+	const CCommandAI* cai = u->commandAI;
+
+	if (cai == nullptr)
+		return;
+
+	// (the std::deque's header: its start and finish iterators)
+	const char* q = reinterpret_cast<const char*>(&cai->commandQue);
+	Prefetch(q);
+	Prefetch(q + 64);
+}
+
+void BarDroidMove::PrefetchCommand(const CUnit* u)
+{
+	// (and SetNextWayPoint's two SquareIsBlocked: the waypoint squares' max height and blocking cell, which stalled it)
+	const CGroundMoveType* gmt = std::launder(reinterpret_cast<const CGroundMoveType*>(u->amtMemBuffer));
+	const float* maxHeights = readMap->GetMaxHeightMapSynced();
+
+	for (const float3& wp: {float3(gmt->GetCurrWayPoint()), float3(gmt->GetNextWayPoint())}) {
+		// (inside the map only; also keeps the float-to-int conversions defined)
+		if (!(wp.x >= 0.0f && wp.z >= 0.0f && wp.x < float3::maxxpos && wp.z < float3::maxzpos))
+			continue;
+
+		const int sx = int(wp.x / SQUARE_SIZE);
+		const int sz = int(wp.z / SQUARE_SIZE);
+
+		if (sx >= mapDims.mapx || sz >= mapDims.mapy)
+			continue;
+
+		Prefetch(&maxHeights[sz * mapDims.mapx + sx]);
+		Prefetch(groundBlockingObjectMap.BarDroidCellAddress(sz * mapDims.mapx + sx));
+	}
+
+	const CCommandAI* cai = u->commandAI;
+
+	if (cai == nullptr || cai->commandQue.empty())
+		return;
+
+	Prefetch(&cai->commandQue.front());
 }
 
 void CGroundMoveType::BarDroidPrefetchGround(const CUnit* u, int stage)
