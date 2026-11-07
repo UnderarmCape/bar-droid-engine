@@ -129,6 +129,10 @@ protected:
 
 	void LuaCall();
 	void DeferredCall(bool synced);
+#ifdef BARDROID_SIM
+	// Tick's interpreter; BarDroidDense: the opcode switch over dense indices (BarDroidCobDispatch, CobThread.cpp)
+	template<bool BarDroidDense> bool TickImpl();
+#endif
 
 	void PushCallStack(CallInfo v) { callStack.push_back(v); }
 	void PushDataStack(int v) { dataStack.push_back(v); }
