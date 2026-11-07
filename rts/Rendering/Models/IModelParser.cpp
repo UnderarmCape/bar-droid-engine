@@ -42,6 +42,7 @@
 #include <atomic>
 #include "System/Config/ConfigHandler.h"
 #include "lib/meshoptimizer/meshoptimizer.h"
+#include "BarDroidModelOverride.h"
 
 // BAR Droid (engine branch): models drawn with fewer triangles, for phones. Each piece's triangles are simplified once,
 // when its model loads (meshoptimizer's edge collapses; seams and open edges keep their shape), down to the given share
@@ -578,8 +579,9 @@ void CModelLoader::PostProcessGeometry(S3DModel* model)
 		model->pieceObjects[i]->PostProcessGeometry(static_cast<uint32_t>(i));
 	}
 #if defined(BARDROID_SIM) && !defined(HEADLESS)
-	// (after the conversion to triangles, before the wreck pieces are cut from them)
-	BarDroidSimplifyModel(model);
+	// (after the conversion to triangles, before the wreck pieces are cut from them; a mobile version is already cut)
+	if (!BarDroidModelIsMobile(model))
+		BarDroidSimplifyModel(model);
 #endif
 	for (auto* p : model->pieceObjects) {
 		p->CreateShatterPieces();

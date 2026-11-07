@@ -5,6 +5,7 @@
 
 #include "S3OParser.h"
 #include "3DModel.hpp"
+#include "BarDroidModelOverride.h"
 #include "ModelUtils.h"
 #include "s3o.h"
 #include "Game/GlobalUnsynced.h"
@@ -54,6 +55,10 @@ void CS3OParser::Load(S3DModel& model, const std::string& name)
 
 	if (fileBuf.size() < sizeof(S3OHeader))
 		throw content_error("[S3OParser] corrupted header for model-file " + name);
+#if defined(BARDROID_SIM)
+	// (BAR Droid: the file as read, before anything is swapped in place: its mobile version must be made from it)
+	const uint64_t barDroidHash = BarDroidFnv1a64(fileBuf.data(), fileBuf.size());
+#endif
 
 	S3OHeader header;
 	memcpy(&header, fileBuf.data(), sizeof(header));
@@ -79,6 +84,11 @@ void CS3OParser::Load(S3DModel& model, const std::string& name)
 	model.radius = (header.radius <= 0.01f)? model.CalcDrawRadius(): header.radius;
 	model.height = (header.height <= 0.01f)? model.CalcDrawHeight(): header.height;
 	model.relMidPos = float3(header.midx, header.midy, header.midz);
+#if defined(BARDROID_SIM)
+	// BAR Droid: everything the game reads is BAR's (above); the pieces' vertices and triangles from the model's
+	// mobile version, for drawing (BarDroidModelOverride.h)
+	BarDroidModelOverride(&model, barDroidHash);
+#endif
 }
 
 
