@@ -95,6 +95,8 @@ private:
 
 	inline static bool engineBuildSquareRendering = true;
 public:
+	// BAR Droid (engine branch, a measurement only: BarDroidUnitModelsOff): the units' opaque pass not drawn at all
+	inline static bool barDroidModelsOff = false;
 	static bool& EngineBuildSquareRendering() { return engineBuildSquareRendering; }
 
 	enum BuildStages {
@@ -109,6 +111,8 @@ public:
 class CUnitDrawerBase : public CUnitDrawer {
 public:
 	void DrawOpaquePass(bool deferredPass, bool drawReflection, bool drawRefraction) const override {
+		if (barDroidModelsOff)
+			return;
 		DrawOpaquePassImpl<LuaObjType::LUAOBJ_UNIT>(deferredPass, drawReflection, drawRefraction);
 	}
 	void DrawAlphaPass(bool drawReflection, bool drawRefraction = false) const override {

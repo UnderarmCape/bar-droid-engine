@@ -71,6 +71,11 @@ CONFIG(int, MaxDynamicModelLights)
 	.minimumValue(0);
 
 CONFIG(bool, AdvUnitShading).deprecated(true);
+#ifdef BARDROID_SIM
+// BAR Droid (engine branch; Kailil, 2026-11-06: "a mobile specific way to do the opaque models so its ultra cheap"): a
+// measurement only, the ceiling of any cheaper unit drawing (impostors): the units' opaque pass left out whole.
+CONFIG(bool, BarDroidUnitModelsOff).defaultValue(false).description("BAR Droid, for measurements: units' opaque models not drawn");
+#endif
 
 /***********************************************************************/
 
@@ -131,6 +136,9 @@ void CUnitDrawer::InitStatic()
 {
 	RECOIL_DETAILED_TRACY_ZONE;
 	CModelDrawerBase<CUnitDrawerData, CUnitDrawer>::InitStatic();
+#ifdef BARDROID_SIM
+	barDroidModelsOff = configHandler->GetBool("BarDroidUnitModelsOff");
+#endif
 
 	LuaObjectDrawer::ReadLODScales(LUAOBJ_UNIT);
 
