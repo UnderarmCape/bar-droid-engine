@@ -59,6 +59,9 @@
 #include "Sim/Weapons/Weapon.h"
 #include "Sim/Weapons/WeaponDefHandler.h"
 #include "Sim/Weapons/WeaponLoader.h"
+#ifdef BARDROID_SIM
+#include "Sim/Misc/BarDroidUnits.h"
+#endif
 #include "System/EventHandler.h"
 #include "System/Log/ILog.h"
 #include "System/Matrix44f.h"
@@ -702,6 +705,74 @@ void CUnit::UpdateWeaponVectors()
 		w->UpdateWeaponVectors();
 	}
 }
+
+#ifdef BARDROID_SIM
+void CUnit::BarDroidPrefetchWeaponsUnit() const
+{
+	BARDROID_PREFETCH(&weapons);
+	BARDROID_PREFETCH(&isDead);
+	BARDROID_PREFETCH(&stunned);
+	BARDROID_PREFETCH(&script);
+}
+
+void CUnit::BarDroidPrefetchWeaponsList() const
+{
+	if (weapons.empty() || script == nullptr)
+		return;
+
+	BARDROID_PREFETCH(weapons.data());
+	BARDROID_PREFETCH(&script->pieces);
+}
+
+void CUnit::BarDroidPrefetchWeaponsObjects() const
+{
+	if (script == nullptr)
+		return;
+
+	const size_t numWeapons = std::min(weapons.size(), size_t(4));
+
+	for (size_t n = 0; n < numWeapons; ++n) {
+		const CWeapon* w = weapons[n];
+		if (w == nullptr)
+			continue;
+
+		BARDROID_PREFETCH(w);
+		BARDROID_PREFETCH(&w->aimFromPiece);
+		BARDROID_PREFETCH(&w->relAimFromPos);
+		BARDROID_PREFETCH(&w->errorVector);
+		BARDROID_PREFETCH(&w->fastAutoRetargeting);
+	}
+	if (numWeapons > 0)
+		BARDROID_PREFETCH(script->pieces.data());
+}
+
+void CUnit::BarDroidPrefetchWeaponsPieces() const
+{
+	if (script == nullptr)
+		return;
+
+	const size_t numWeapons = std::min(weapons.size(), size_t(4));
+	const auto& scriptPieces = script->pieces;
+
+	for (size_t n = 0; n < numWeapons; ++n) {
+		const CWeapon* w = weapons[n];
+		if (w == nullptr)
+			continue;
+
+		for (const int pieceIdx: {w->aimFromPiece, w->muzzlePiece}) {
+			if (static_cast<size_t>(pieceIdx) >= scriptPieces.size())
+				continue;
+
+			const LocalModelPiece* lmp = scriptPieces[pieceIdx];
+			if (lmp == nullptr)
+				continue;
+
+			BARDROID_PREFETCH(&lmp->GetModelSpaceTransformRaw());
+			BARDROID_PREFETCH(&lmp->GetRotation());
+		}
+	}
+}
+#endif
 
 void CUnit::UpdateWeapons()
 {

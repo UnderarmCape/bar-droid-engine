@@ -11,6 +11,9 @@
 
 #include "Rendering/Models/LocalModelPiece.hpp"
 #include "System/creg/creg_cond.h"
+#ifdef BARDROID_SIM
+#include "Sim/Misc/BarDroidUnits.h"
+#endif
 
 
 class CUnit;
@@ -117,6 +120,31 @@ public:
 	const CUnit* GetUnit() const { return unit; }
 
 	auto GetAnimArrayChecksum() const { return checksum; }
+#ifdef BARDROID_SIM
+	// BAR Droid (BarDroidAnimPrefetch): prefetch hints for CUnitScriptEngine::Tick's animation step, in three stages a
+	// few scripts ahead: this object; then its anim list, piece table and model root (read from the object); then the
+	// pieces its first anims will turn or move (read from those). Hints only: nothing is written.
+	void BarDroidPrefetchObject() const {
+		BARDROID_PREFETCH(&anims);
+		BARDROID_PREFETCH(&pieces);
+	}
+	void BarDroidPrefetchArrays() const {
+		BARDROID_PREFETCH(anims.data());
+		if (anims.size() > 2)
+			BARDROID_PREFETCH(reinterpret_cast<const char*>(anims.data()) + 64);
+		BARDROID_PREFETCH(pieces.data());
+		BARDROID_PREFETCH(rootPiece);
+	}
+	void BarDroidPrefetchPieces() const {
+		const size_t numAnims = std::min(anims.size(), size_t(8));
+		for (size_t k = 0; k < numAnims; ++k) {
+			const size_t pieceIdx = static_cast<size_t>(anims[k].piece);
+			if (pieceIdx >= pieces.size() || pieces[pieceIdx] == nullptr)
+				continue;
+			BARDROID_PREFETCH(&pieces[pieceIdx]->GetRotation());
+		}
+	}
+#endif
 	void TickAllAnims(int tickRate);
 	bool TickAnimFinished();
 	// note: must copy-and-set here (LMP dirty flag, etc)

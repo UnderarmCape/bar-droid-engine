@@ -67,6 +67,35 @@ CQuaternion CQuaternion::FromEulerYPR(const float3& angles)
 	return AssertNormalized(yprQ);
 }
 
+#ifdef BARDROID_SIM
+void CQuaternion::BarDroidHalfAngleSinCos(float angle, float& s, float& c)
+{
+	// FromEulerYPR's math::sin(angles[i] * 0.5f) and math::cos(angles[i] * 0.5f)
+	s = math::sin(angle * 0.5f);
+	c = math::cos(angle * 0.5f);
+}
+
+CQuaternion CQuaternion::BarDroidFromEulerYPRSinCos(const float* halfSin, const float* halfCos)
+{
+	// FromEulerYPR above with its six values given: the same products and sums in the same order
+	const float sp = halfSin[CMatrix44f::ANGLE_P];
+	const float cp = halfCos[CMatrix44f::ANGLE_P];
+	const float sy = halfSin[CMatrix44f::ANGLE_Y];
+	const float cy = halfCos[CMatrix44f::ANGLE_Y];
+	const float sr = halfSin[CMatrix44f::ANGLE_R];
+	const float cr = halfCos[CMatrix44f::ANGLE_R];
+
+	CQuaternion yprQ{
+		cr * cy * sp + cp * sr * sy,
+		cp * cr * sy - cy * sp * sr,
+		cp * cy * sr - cr * sp * sy,
+		cp * cr * cy + sp * sr * sy
+	};
+
+	return AssertNormalized(yprQ);
+}
+#endif
+
 /// <summary>
 /// Return YPR Euler angles, so that
 /// CMatrix44f::RotateEulerYXZ(-ang) == CQuaternion::ToRotMatrix()

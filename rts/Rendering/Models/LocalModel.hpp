@@ -91,6 +91,29 @@ public:
 	// CSolidObject::UpdatePrevFrameTransform (LocalModelPiece sets it); while false every piece's prevModelSpaceTra
 	// already equals its modelSpaceTra and none is dirty, so that copy can be left out. Drawing-only data.
 	mutable bool barDroidPrevStale = true;
+
+	// BAR Droid (BarDroidAnimDirtyRange): every piece of this model that is dirty has its index in
+	// [barDroidDirtyLo, barDroidDirtyHi] (LocalModelPiece::SetDirty widens it; the unit scripts' piece walk clears it
+	// once every piece is clean). Starts as everything (pieces are made dirty; a loaded game's pieces too).
+	int32_t barDroidDirtyLo = 0;
+	int32_t barDroidDirtyHi = INT32_MAX - 1;
+
+	void BarDroidMarkDirty(int32_t pieceIdx) {
+		if (pieceIdx < 0) {
+			// (a piece without its index: everything, as at the start)
+			barDroidDirtyLo = 0;
+			barDroidDirtyHi = INT32_MAX - 1;
+			return;
+		}
+		barDroidDirtyLo = std::min(barDroidDirtyLo, pieceIdx);
+		barDroidDirtyHi = std::max(barDroidDirtyHi, pieceIdx);
+	}
+	void BarDroidClearDirtyRange() {
+		barDroidDirtyLo = INT32_MAX;
+		barDroidDirtyHi = -1;
+	}
+	size_t BarDroidDirtyBegin() const { return (barDroidDirtyLo < 0) ? size_t(0) : size_t(barDroidDirtyLo); }
+	size_t BarDroidDirtyEnd() const { return (barDroidDirtyHi < 0) ? size_t(0) : (size_t(barDroidDirtyHi) + 1); }
 #endif
 
 private:

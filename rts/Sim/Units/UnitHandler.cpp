@@ -31,6 +31,9 @@
 #include "Sim/Path/HAPFS/PathGlobal.h"
 
 #include "System/Misc/TracyDefs.h"
+#ifdef BARDROID_SIM
+#include "Sim/Misc/BarDroidUnits.h"
+#endif
 
 #include "System/Config/ConfigHandler.h"
 CONFIG(bool, UpdateWeaponVectorsMT).deprecated(true);
@@ -351,8 +354,16 @@ void CUnitHandler::UpdateUnitLosStates()
 	before.resize(size_t(numUnits) * numAllyTeams);
 	after.resize(before.size());
 
-	for_mt(0, (numUnits + BLOCK - 1) / BLOCK, [this, numUnits, numAllyTeams](const int block) {
+	const bool prefetch = BarDroidUnits::losStatePrefetch;
+	for_mt(0, (numUnits + BLOCK - 1) / BLOCK, [this, numUnits, numAllyTeams, prefetch](const int block) {
 		for (int i = block * BLOCK, end = std::min(numUnits, i + BLOCK); i < end; ++i) {
+			// (BarDroidLosStatePrefetch: hints for the unit four ahead, whose status and place are read next)
+			if (prefetch && i + 4 < end) {
+				const CUnit* ahead = activeUnits[i + 4];
+				BARDROID_PREFETCH(&ahead->losStatus[0]);
+				BARDROID_PREFETCH(&ahead->pos);
+				BARDROID_PREFETCH(&ahead->isCloaked);
+			}
 			CUnit* unit = activeUnits[i];
 			for (int at = 0; at < numAllyTeams; ++at) {
 				const unsigned short cur = unit->losStatus[at];
@@ -362,6 +373,9 @@ void CUnitHandler::UpdateUnitLosStates()
 		}
 	});
 	for (int i = 0; i < numUnits; ++i) {
+		if (prefetch && i + 8 < numUnits)
+			BARDROID_PREFETCH(&activeUnits[i + 8]->losStatus[0]);
+
 		CUnit* unit = activeUnits[i];
 		for (int at = 0; at < numAllyTeams; ++at) {
 			const size_t k = size_t(i) * numAllyTeams + at;
@@ -451,6 +465,31 @@ void CUnitHandler::UpdateUnitWeapons()
 	{
 		SCOPED_TIMER("Sim::Unit::UpdateWeaponVectors");
 
+#ifdef BARDROID_SIM
+		if (BarDroidUnits::weaponPrefetch) {
+			// BAR Droid (BarDroidWeaponPrefetch): the same UpdateWeaponVectors per unit (each touches only its own
+			// unit, weapons and pieces, as for_mt_chunk already assumed), in blocks of 32 a thread takes at once, with
+			// prefetch hints inside the block along the chain the call walks: the unit four ahead, its weapon list and
+			// script three ahead, the weapons and the script's piece table two ahead, the weapons' pieces one ahead
+			// (the loop waited on those loads: simpleperf, late 8v8, 2026-11-07)
+			static constexpr int BLOCK = 32;
+			const int numUnits = activeUnits.size();
+
+			for_mt(0, (numUnits + BLOCK - 1) / BLOCK, [&](const int block) {
+				const int beg = block * BLOCK;
+				const int end = std::min(numUnits, beg + BLOCK);
+
+				for (int i = beg; i < end; ++i) {
+					if (i + 4 < end) activeUnits[i + 4]->BarDroidPrefetchWeaponsUnit();
+					if (i + 3 < end) activeUnits[i + 3]->BarDroidPrefetchWeaponsList();
+					if (i + 2 < end) activeUnits[i + 2]->BarDroidPrefetchWeaponsObjects();
+					if (i + 1 < end) activeUnits[i + 1]->BarDroidPrefetchWeaponsPieces();
+
+					activeUnits[i]->UpdateWeaponVectors();
+				}
+			});
+		} else
+#endif
 		for_mt_chunk(0, activeUnits.size(), [&](const int idx) {
 			auto unit = activeUnits[idx];
 			unit->UpdateWeaponVectors();
@@ -458,7 +497,19 @@ void CUnitHandler::UpdateUnitWeapons()
 	}
 	{
 		SCOPED_TIMER("Sim::Unit::Weapon");
+#ifdef BARDROID_SIM
+		// (BarDroidWeaponPrefetch: hints for the units ahead in this serial loop: their weapon lists, then the weapons'
+		// objects; activeUnits may only grow while it runs, so each ahead index is checked against its size now)
+		const bool prefetch = BarDroidUnits::weaponPrefetch;
+#endif
 		for (activeUpdateUnit = 0; activeUpdateUnit < activeUnits.size(); ++activeUpdateUnit) {
+#ifdef BARDROID_SIM
+			if (prefetch) {
+				if (activeUpdateUnit + 3 < activeUnits.size()) activeUnits[activeUpdateUnit + 3]->BarDroidPrefetchWeaponsUnit();
+				if (activeUpdateUnit + 2 < activeUnits.size()) activeUnits[activeUpdateUnit + 2]->BarDroidPrefetchWeaponsList();
+				if (activeUpdateUnit + 1 < activeUnits.size()) activeUnits[activeUpdateUnit + 1]->BarDroidPrefetchWeaponsObjects();
+			}
+#endif
 			activeUnits[activeUpdateUnit]->UpdateWeapons();
 		}
 	}

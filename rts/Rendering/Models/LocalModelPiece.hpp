@@ -99,6 +99,12 @@ struct LocalModelPiece
 
 	void PostLoad();
 private:
+	// pieceSpaceTra = CalcPieceSpaceTransform(pos, rot, scale), as each of the update functions did it
+	void ComputePieceSpaceTransform() const;
+#ifdef BARDROID_SIM
+	void BarDroidComputePieceSpaceTransform() const;
+#endif
+
 	mutable CMatrix44f modelSpaceMat; // transform relative to root LMP (SYNCED), chained pieceSpaceMat's
 	mutable Transform pieceSpaceTra;  // transform relative to parent LMP (SYNCED), combines <pos> and <rot>
 	mutable Transform modelSpaceTra;  // transform relative to root LMP (SYNCED), chained pieceSpaceTra's
@@ -118,6 +124,21 @@ private:
 
 	mutable std::array<bool, 2> wasUpdated; // currFrame, prevFrame
 	bool scriptSetVisible; // TODO: add (visibility) maxradius!
+#ifdef BARDROID_SIM
+	// BAR Droid (BarDroidPieceTrigCache): memos of pure functions, never serialized (they start empty).
+	// Per axis a: bdSin[a] = math::sin(rot[a] * 0.5f) and bdCos[a] = math::cos(rot[a] * 0.5f) for the angle whose
+	// bits are bdRotKey[a] (bit a of bdTrigValid). While bdTraValid: pieceSpaceTra is the compose of position bits
+	// bdPosKey, rotation bits bdRotKey and scale bits bdScaleKey with the S3DModelPiece bdOriginal (any other write
+	// of pieceSpaceTra clears it).
+	mutable uint32_t bdRotKey[3] = {0, 0, 0};
+	mutable uint32_t bdPosKey[3] = {0, 0, 0};
+	mutable uint32_t bdScaleKey = 0;
+	mutable float bdSin[3] = {0.0f, 0.0f, 0.0f};
+	mutable float bdCos[3] = {0.0f, 0.0f, 0.0f};
+	mutable const S3DModelPiece* bdOriginal = nullptr;
+	mutable uint8_t bdTrigValid = 0;
+	mutable bool bdTraValid = false;
+#endif
 public:
 	bool blockScriptAnims; // if true, Set{Position,Rotation} are ignored for this piece
 	int32_t lmodelPieceIndex; // index of this piece into LocalModel::pieces
