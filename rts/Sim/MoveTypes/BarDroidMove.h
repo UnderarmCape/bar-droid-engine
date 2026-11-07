@@ -47,5 +47,7 @@ namespace BarDroidMove {
 	// Reads only (as FollowPath's own, in the same section, where no thread changes a command queue).
 	void PrefetchCommandAI(const CUnit* unit);
 	void PrefetchCommand(const CUnit* unit);
+	// (the unit positions' parallel section) the map cells CMoveMath::GetPosSpeedMod reads at the unit's square
+	void PrefetchSpeedModCells(const CUnit* unit);
 }
 #endif

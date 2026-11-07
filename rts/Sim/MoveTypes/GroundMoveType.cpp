@@ -3788,6 +3788,31 @@ void BarDroidMove::PrefetchCommand(const CUnit* u)
 	Prefetch(&cai->commandQue.front());
 }
 
+void BarDroidMove::PrefetchSpeedModCells(const CUnit* u)
+{
+	// CMoveMath::GetPosSpeedMod at the unit's square (ChangeSpeed, UpdatePos' centre-square terrain test): the type and
+	// slope maps (half resolution), the max heights and the 2D centre normals
+	const float x = u->pos.x;
+	const float z = u->pos.z;
+
+	if (!(x >= 0.0f && z >= 0.0f && x < float3::maxxpos && z < float3::maxzpos))
+		return;
+
+	const int sx = int(x / SQUARE_SIZE);
+	const int sz = int(z / SQUARE_SIZE);
+
+	if (sx >= mapDims.mapx || sz >= mapDims.mapy)
+		return;
+
+	const int sq = sx + sz * mapDims.mapx;
+	const int hsq = (sx >> 1) + (sz >> 1) * mapDims.hmapx;
+
+	Prefetch(&readMap->GetTypeMapSynced()[hsq]);
+	Prefetch(&readMap->GetSlopeMapSynced()[hsq]);
+	Prefetch(&readMap->GetMaxHeightMapSynced()[sq]);
+	Prefetch(&readMap->GetCenterNormals2DSynced()[sq]);
+}
+
 void CGroundMoveType::BarDroidPrefetchGround(const CUnit* u, int stage)
 {
 	using BarDroidMove::Prefetch;

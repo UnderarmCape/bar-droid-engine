@@ -109,6 +109,19 @@ namespace {
 		if ((barDroidI + 1) < barDroidN)                                                                            \
 			BarDroidMove::PrefetchCommand(BARDROID_UNIT_AT(barDroidI + 1));                                         \
 	} while (false)
+
+// the unit positions: the unit 3 on (its lines), the speed-mod map cells under the unit 1 on (its position now in cache)
+#define BARDROID_PREFETCH_MT_POS(i)                                                                                 \
+	do {                                                                                                            \
+		if (!barDroidPrefetch)                                                                                      \
+			break;                                                                                                  \
+		const size_t barDroidN = view.size();                                                                       \
+		const size_t barDroidI = static_cast<size_t>(i);                                                            \
+		if ((barDroidI + 3) < barDroidN)                                                                            \
+			CGroundMoveType::BarDroidPrefetchLines(BARDROID_UNIT_AT(barDroidI + 3), -1);                            \
+		if ((barDroidI + 1) < barDroidN)                                                                            \
+			BarDroidMove::PrefetchSpeedModCells(BARDROID_UNIT_AT(barDroidI + 1));                                   \
+	} while (false)
 #endif
 
 using namespace MoveTypes;
@@ -243,7 +256,7 @@ void GroundMoveSystem::Update() {
         // (BAR Droid: these two parts had no timer of their own)
         SCOPED_TIMER("Sim::Unit::MoveType::2b::UnitPosition");
         for_mt(0, view.size(), [&view, barDroidPrefetch](const int i){
-            BARDROID_PREFETCH_MT(i);
+            BARDROID_PREFETCH_MT_POS(i);
 #else
         for_mt(0, view.size(), [&view](const int i){
 #endif
