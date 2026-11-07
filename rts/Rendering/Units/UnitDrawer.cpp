@@ -82,6 +82,10 @@ CONFIG(int, BarDroidModelLodPixels).defaultValue(0).minimumValue(0).description(
 // mobile ones (0); read every frame, as BarDroidModelLodPixels is then, so one game can alternate them (an A/B in the
 // same heat, bardroid_abswitch.lua)
 CONFIG(int, BarDroidModelDrawBar).defaultValue(0).minimumValue(0).maximumValue(1).description("BAR Droid, for measurements: with BarDroidModelOverrideAB, BAR's own models drawn (1) or the mobile ones (0)");
+// BAR Droid: the screen-space unit icons skip what they would not draw anyway (icons off the screen, faded ones before
+// their position is projected); read at each pass, 0: as stock. Drawing only.
+CONFIG(bool, BarDroidIconCull).defaultValue(true).description("BAR Droid: the screen-space unit icons leave out icons off the screen and faded ones early (0: as stock)");
+static bool barDroidIconCull = true;
 #endif
 
 /***********************************************************************/
@@ -658,8 +662,17 @@ void CUnitDrawerGLSL::DrawUnitIconScreen(TypedRenderBuffer<VA_TYPE_2DTC3>& rb, s
 	const float x1 = (pos.x + offset) / globalRendering->viewSizeX;
 	const float y1 = (pos.y - offset) / globalRendering->viewSizeY;
 
+#ifdef BARDROID_SIM
+	// BAR Droid (BarDroidIconCull): off the screen when it is past any one edge (the stock test asks for all four at once, which never
+	// holds, so every unit's icon was built every frame; y0 is the icon's top, y1 its bottom)
+	if (barDroidIconCull && (x1 < 0.0f || x0 > 1.0f || y0 < 0.0f || y1 > 1.0f))
+		return;
+	if (x1 < 0 && x0 > 1 && y0 < 0 && y1 > 1)
+		return;
+#else
 	if (x1 < 0 && x0 > 1 && y0 < 0 && y1 > 1)
 		return; // don't try to draw when totally outside the screen
+#endif
 
 	const auto& tc = iconData.GetTexCoords();
 	const float atlasIdx = static_cast<float>(tc.pageNum);
@@ -675,6 +688,10 @@ void CUnitDrawerGLSL::DrawUnitIconScreen(TypedRenderBuffer<VA_TYPE_2DTC3>& rb, s
 void CUnitDrawerGLSL::DrawUnitIconsScreen() const
 {
 	ZoneScoped;
+#ifdef BARDROID_SIM
+	SCOPED_TIMER("Draw::Screen::UnitIcons");
+	barDroidIconCull = configHandler->GetBool("BarDroidIconCull");
+#endif
 
 	if (game->hideInterface && modelDrawerData->iconHideWithUI)
 		return;
@@ -701,6 +718,19 @@ void CUnitDrawerGLSL::DrawUnitIconsScreen() const
 
 		assert(!unit->IsInVoid());
 
+#ifdef BARDROID_SIM
+		// BAR Droid: a unit drawn as its model whose icon has faded away at this zoom (DrawUnitIconScreen's first test,
+		// which needs nothing of its position) is left out before its position is projected
+		if (barDroidIconCull && !unit->GetIsIcon()) {
+			const auto& iconData = icon::iconHandler.GetIconData(unit->currentIconIndex);
+			float unitRadiusMult = iconData.GetSize();
+			if (iconData.GetRadiusAdjust() && unit->currentIconIndex != icon::iconHandler.GetDefaultIconIdx())
+				unitRadiusMult *= (unit->radius / iconData.GetRadiusScale());
+			unitRadiusMult = unitRadiusMult * 0.75f + 0.25f;
+			if (modelDrawerData->iconZoomDist / unitRadiusMult < modelDrawerData->iconFadeVanish)
+				continue;
+		}
+#endif
 
 		// drawMidPos is auto-calculated now; can wobble on its own as pieces move
 		float3 pos = (!isFullView) ?
