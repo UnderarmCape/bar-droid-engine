@@ -1482,6 +1482,67 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
     if (b != 0) L->top = ra+b;  /* else previous instruction set top */
     L->savedpc = pc;
     lua_assert(GETARG_C(i) - 1 == LUA_MULTRET);
+    /* BarDroidLuaFastCall for a Lua function: luaD_precall's Lua case as in OP_CALL, then the frame move below */
+    if (likely_bd(fastCall && ttisfunction(ra) && !clvalue(ra)->c.isC && !(L->hookmask & LUA_MASKCALL) &&
+                  L->ci != L->end_ci)) {
+      LClosure *ncl = &clvalue(ra)->l;
+      Proto *p = ncl->p;
+      if (likely_bd(!((char *)L->stack_last - (char *)L->top <= p->maxstacksize*(int)sizeof(TValue)))) {
+        CallInfo *ci;
+        StkId st, nbase, func, pfunc;
+        int aux;
+        L->ci->savedpc = L->savedpc;
+        if (likely_bd(!p->is_vararg)) {  /* no varargs? */
+          nbase = ra + 1;
+          if (L->top > nbase + p->numparams)
+            L->top = nbase + p->numparams;
+        }
+        else {  /* adjust_varargs (ldo.cpp) without LUA_COMPAT_VARARG */
+          const int nfixargs = p->numparams;
+          int actual = cast_int(L->top - ra) - 1;
+          StkId fixed;
+          int j;
+          for (; actual < nfixargs; ++actual)
+            setnilvalue(L->top++);
+          fixed = L->top - actual;  /* first fixed argument */
+          nbase = L->top;  /* final position of first argument */
+          for (j = 0; j < nfixargs; j++) {
+            setobjs2s(L, L->top++, fixed+j);
+            setnilvalue(fixed+j);
+          }
+        }
+        ci = ++L->ci;  /* now `enter' new function */
+        ci->func = ra;
+        L->base = ci->base = nbase;
+        ci->top = L->base + p->maxstacksize;
+        lua_assert(ci->top <= L->stack_last);
+        L->savedpc = p->code;  /* starting point */
+        ci->tailcalls = 0;
+        ci->nresults = LUA_MULTRET;
+        for (st = L->top; st < ci->top; st++)
+          setnilvalue(st);
+        L->top = ci->top;
+        /* tail call: put new frame in place of previous one (the PCRLUA case below) */
+        ci = L->ci - 1;  /* previous frame */
+        func = ci->func;
+        pfunc = (ci+1)->func;  /* previous function index */
+        if (L->openupval) luaF_close(L, ci->base);
+        L->base = ci->base = ci->func + ((ci+1)->base - pfunc);
+        for (aux = 0; pfunc+aux < L->top; aux++)  /* move frame down */
+          setobjs2s(L, func+aux, pfunc+aux);
+        ci->top = L->top = func+aux;  /* correct top */
+        ci->savedpc = L->savedpc;
+        ci->tailcalls++;  /* one more call lost */
+        L->ci--;  /* remove new frame */
+        /* (bd_reentry's loads, known here) */
+        cl = ncl;
+        base = L->base;
+        k = p->k;
+        pc = L->savedpc;
+        BD_PREFETCH_ENTRY(cl);
+        BD_DISPATCH();
+      }
+    }
     switch (luaD_precall(L, ra, LUA_MULTRET)) {
       case PCRLUA: {
         /* tail call: put new frame in place of previous one */
