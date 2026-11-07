@@ -29,6 +29,9 @@ struct S3DModelPiece {
 		indices.clear();
 		shatterIndices.clear();
 		barDroidLodIndices.clear();
+		barDroidBarVerts.clear();
+		barDroidBarIndices.clear();
+		barDroidBarVertIndex = ~0u;
 
 		parent = nullptr;
 		colvol = {};
@@ -126,6 +129,11 @@ public:
 	// BAR Droid (engine branch, BarDroidModelLodShare): a much coarser index list over the same vertices, for the model
 	// drawn small on the screen (empty: the piece's own list)
 	std::vector<uint32_t> barDroidLodIndices;
+	// (BarDroidModelOverrideAB, a measurement: a mobile model's piece keeps BAR's own vertices and triangles too, uploaded
+	// after the model's own; barDroidBarVertIndex: where they start in the buffer)
+	std::vector<SVertexData> barDroidBarVerts;
+	std::vector<uint32_t> barDroidBarIndices;
+	uint32_t barDroidBarVertIndex = ~0u;
 protected:
 	std::vector<SVertexData> vertices;
 	std::vector<uint32_t> indices;

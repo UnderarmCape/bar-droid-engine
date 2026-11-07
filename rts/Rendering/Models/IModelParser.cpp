@@ -580,8 +580,29 @@ void CModelLoader::PostProcessGeometry(S3DModel* model)
 	}
 #if defined(BARDROID_SIM) && !defined(HEADLESS)
 	// (after the conversion to triangles, before the wreck pieces are cut from them; a mobile version is already cut)
-	if (!BarDroidModelIsMobile(model))
+	if (!BarDroidModelIsMobile(model)) {
 		BarDroidSimplifyModel(model);
+	} else {
+		// (BarDroidModelOverrideAB: BAR's own geometry kept beside the mobile one gets the cut BAR's models get, so the
+		// A/B compares the mobile models with what is drawn without them)
+		bool kept = false;
+		for (auto* p : model->pieceObjects) kept |= !p->barDroidBarVerts.empty();
+		if (kept) {
+			auto swapAll = [model]() {
+				for (auto* p : model->pieceObjects) {
+					if (p->barDroidBarVerts.empty()) continue;
+					p->GetVerticesVec().swap(p->barDroidBarVerts);
+					p->GetIndicesVec().swap(p->barDroidBarIndices);
+				}
+			};
+			std::vector<std::vector<uint32_t>> lods;
+			for (auto* p : model->pieceObjects) lods.push_back(p->barDroidLodIndices);
+			swapAll();
+			BarDroidSimplifyModel(model);
+			swapAll();
+			for (size_t i = 0; i < lods.size(); ++i) model->pieceObjects[i]->barDroidLodIndices.swap(lods[i]);
+		}
+	}
 #endif
 	for (auto* p : model->pieceObjects) {
 		p->CreateShatterPieces();

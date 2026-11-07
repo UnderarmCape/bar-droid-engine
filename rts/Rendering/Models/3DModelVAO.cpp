@@ -86,6 +86,17 @@ void S3DModelVAO::ProcessVertices(const S3DModel* model)
 		vertIndex += modelPieceVerts.size();
 		vertData.insert(vertData.end(), modelPieceVerts.begin(), modelPieceVerts.end()); //append
 	}
+#if defined(BARDROID_SIM)
+	// BAR Droid (BarDroidModelOverrideAB): BAR's own vertices of a mobile model after its own
+	for (auto* modelPiece : model->pieceObjects) {
+		if (modelPiece->barDroidBarVerts.empty())
+			continue;
+		modelPiece->barDroidBarVertIndex = vertIndex;
+		vertIndex += modelPiece->barDroidBarVerts.size();
+		vertData.insert(vertData.end(), modelPiece->barDroidBarVerts.begin(), modelPiece->barDroidBarVerts.end());
+		std::vector<SVertexData>().swap(modelPiece->barDroidBarVerts);
+	}
+#endif
 }
 
 void S3DModelVAO::ProcessIndicies(S3DModel* model)
@@ -160,6 +171,25 @@ void S3DModelVAO::ProcessIndicies(S3DModel* model)
 			std::vector<uint32_t>().swap(modelPiece->barDroidLodIndices);   // (in the buffer now)
 		}
 		model->barDroidLodCount = static_cast<uint32_t>(ib + indxData.size() - model->barDroidLodStart);
+	}
+	// BAR Droid (BarDroidModelOverrideAB): BAR's own triangles of a mobile model, every piece (its BAR list over its BAR
+	// vertices, else its own), so one draw of the range is BAR's whole model
+	bool anyBar = false;
+	for (const auto* modelPiece : model->pieceObjects)
+		anyBar |= (modelPiece->barDroidBarVertIndex != ~0u);
+	if (anyBar) {
+		model->barDroidBarStart = static_cast<uint32_t>(ib + indxData.size());
+		for (auto* modelPiece : model->pieceObjects) {
+			const bool own = (modelPiece->barDroidBarVertIndex == ~0u);
+			if (own && !modelPiece->HasGeometryData())
+				continue;
+			const auto& list = own ? modelPiece->GetIndicesVec() : modelPiece->barDroidBarIndices;
+			indxData.insert(indxData.end(), list.begin(), list.end());
+			const auto endIdx = indxData.end();
+			std::for_each(endIdx - list.size(), endIdx, [offset = own ? modelPiece->vertIndex : modelPiece->barDroidBarVertIndex](uint32_t& indx) { indx += offset; });
+			std::vector<uint32_t>().swap(modelPiece->barDroidBarIndices);
+		}
+		model->barDroidBarCount = static_cast<uint32_t>(ib + indxData.size() - model->barDroidBarStart);
 	}
 #endif
 }
@@ -420,6 +450,10 @@ bool S3DModelVAO::AddToSubmission(const CUnit* unit)
 
 	const S3DModel* model = unit->model;
 	assert(model);
+#if defined(BARDROID_SIM)
+	if (barDroidDrawBar && model->barDroidBarCount > 0)
+		return AddToSubmissionImpl(unit, model->barDroidBarStart, model->barDroidBarCount, unit->paletteIndex);
+#endif
 
 	return AddToSubmissionImpl(unit, model->indxStart, model->indxCount, unit->paletteIndex);
 }
@@ -427,7 +461,7 @@ bool S3DModelVAO::AddToSubmission(const CUnit* unit)
 bool S3DModelVAO::AddToSubmissionLod(const CUnit* unit)
 {
 	const S3DModel* model = unit->model;
-	if (model == nullptr || model->barDroidLodCount == 0)
+	if (model == nullptr || model->barDroidLodCount == 0 || (barDroidDrawBar && model->barDroidBarCount > 0))
 		return false;
 	return AddToSubmissionImpl(unit, model->barDroidLodStart, model->barDroidLodCount, unit->paletteIndex);
 }
@@ -439,6 +473,10 @@ bool S3DModelVAO::AddToSubmission(const CFeature* feature)
 
 	const S3DModel* model = feature->model;
 	assert(model);
+#if defined(BARDROID_SIM)
+	if (barDroidDrawBar && model->barDroidBarCount > 0)
+		return AddToSubmissionImpl(feature, model->barDroidBarStart, model->barDroidBarCount, feature->paletteIndex);
+#endif
 
 	return AddToSubmissionImpl(feature, model->indxStart, model->indxCount, feature->paletteIndex);
 }

@@ -78,6 +78,10 @@ CONFIG(bool, BarDroidUnitModelsOff).defaultValue(false).description("BAR Droid, 
 // BAR Droid: a unit smaller on the screen than this many pixels across is drawn from its model's coarse copy
 // (IModelParser.cpp BarDroidModelLodShare; 0: never). Drawing only.
 CONFIG(int, BarDroidModelLodPixels).defaultValue(0).minimumValue(0).description("BAR Droid: units under this many pixels across drawn from their model's coarse copy (0: never)");
+// BAR Droid (with BarDroidModelOverrideAB, a measurement): units and features drawn from BAR's own models (1) or the
+// mobile ones (0); read every frame, as BarDroidModelLodPixels is then, so one game can alternate them (an A/B in the
+// same heat, bardroid_abswitch.lua)
+CONFIG(int, BarDroidModelDrawBar).defaultValue(0).minimumValue(0).maximumValue(1).description("BAR Droid, for measurements: with BarDroidModelOverrideAB, BAR's own models drawn (1) or the mobile ones (0)");
 #endif
 
 /***********************************************************************/
@@ -1686,6 +1690,10 @@ void CUnitDrawerGL4::DrawOpaqueObjects(int modelType, bool drawReflection, bool 
 
 	// (BarDroidModelLodPixels: a unit is under that many pixels across when 2r * viewSizeY / (2 d tan(fov/2)) is, i.e.
 	// when it is farther from the camera than r times this)
+#ifdef BARDROID_SIM
+	barDroidLodPixels = configHandler->GetInt("BarDroidModelLodPixels");
+	S3DModelVAO::barDroidDrawBar = configHandler->GetInt("BarDroidModelDrawBar") != 0;
+#endif
 	const CCamera* lodCam = CCameraHandler::GetActiveCamera();
 	const float lodScale = (barDroidLodPixels > 0) ? globalRendering->viewSizeY / (lodCam->GetTanHalfFov() * barDroidLodPixels) : 0.0f;
 

@@ -18,6 +18,8 @@
 #include "System/FileSystem/FileHandler.h"
 #include "System/Log/ILog.h"
 
+CONFIG(bool, BarDroidModelOverrideAB).defaultValue(false)
+	.description("BAR Droid, for measurements: mobile models keep BAR's own geometry too (more GPU memory), drawn while BarDroidModelDrawBar = 1");
 CONFIG(std::string, BarDroidModelOverrideDir).defaultValue("")
 	.description("BAR Droid: a folder (in the write dir) of mobile versions of the game's S3O models at their own paths, drawn in place of BAR's (drawing only; BAR's model gives every size, bound and collision volume)");
 
@@ -177,6 +179,7 @@ bool BarDroidModelOverride(S3DModel* model, uint64_t fileHash)
 		return false;
 	}
 
+	static const bool keepBar = configHandler->GetBool("BarDroidModelOverrideAB");
 	uint64_t tb = 0, tm = 0, tc = 0, vb = 0, vm = 0;
 	for (auto& [o, m] : pairs) {
 		tb += o->GetIndicesVec().size() / 3;
@@ -206,6 +209,17 @@ bool BarDroidModelOverride(S3DModel* model, uint64_t fileHash)
 		ModelUtils::CalculateTangents(verts, indices);
 		o->GetVerticesVec().swap(verts);
 		o->GetIndicesVec().swap(indices);
+		if (keepBar) {   // (BAR's own kept for the A/B; its bone, the piece's number, as PostProcessGeometry gives the mobile ones)
+			const size_t pieceIndex = std::find(model->pieceObjects.begin(), model->pieceObjects.end(), o) - model->pieceObjects.begin();
+			for (auto& v : verts) {
+				if (v.boneIDsLow == SVertexData::DEFAULT_BONEIDS_LOW && v.boneIDsHigh == SVertexData::DEFAULT_BONEIDS_HIGH) {
+					v.boneIDsLow[0] = static_cast<uint8_t>(pieceIndex & 0xFF);
+					v.boneIDsHigh[0] = static_cast<uint8_t>((pieceIndex >> 8) & 0xFF);
+				}
+			}
+			o->barDroidBarVerts.swap(verts);
+			o->barDroidBarIndices.swap(indices);
+		}
 		o->barDroidLodIndices = m->lod;
 		tm += m->tris.size() / 3;
 		tc += (m->lod.empty() ? m->tris.size() : m->lod.size()) / 3;

@@ -74,6 +74,8 @@ public:
 	bool AddToSubmission(const CUnit* unit);
 	// BAR Droid (BarDroidModelLodPixels): the unit from its model's coarse copy (false, nothing added: it has none)
 	bool AddToSubmissionLod(const CUnit* unit);
+	// BAR Droid (BarDroidModelOverrideAB): units and features drawn from BAR's own geometry where a mobile model keeps it
+	inline static bool barDroidDrawBar = false;
 	bool AddToSubmission(const CFeature* feature);
 
 	bool AddToSubmission(const UnitDef* unitDef, uint16_t paletteIndex);
