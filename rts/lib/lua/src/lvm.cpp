@@ -801,14 +801,16 @@ void luaV_execute (lua_State *L, int nexeccalls) {
 ** {==================================================================
 ** BAR Droid (engine branch): luaV_execute_bd, luaV_execute with
 **  - computed-goto dispatch: each opcode's handler ends in its own indirect jump (BarDroidLuaVM);
-**  - BarDroidLuaFastTable: luaV_gettable/luaV_settable's first step inline in the VM, with luaH_get's string and
-**    array-part lookups inline (the same lookups as luaH_getstr/luaH_getnum; luaH_get/luaH_set for every other
-**    key, every new key and every metamethod step, which run the stock loops' remaining steps);
-**  - BarDroidLuaFastCall: luaD_precall's and luaD_poscall's work inline for calls that need no stack or CallInfo
-**    growth, no call or return hook, no __call and no vararg adjustment (everything else calls luaD_precall);
+**  - BarDroidLuaFastTable: luaV_gettable/luaV_settable's first step inline in the VM (and luaV_gettable's second
+**    when the first found an __index table), with luaH_get's string and array-part lookups inline (the same
+**    lookups as luaH_getstr/luaH_getnum; luaH_get/luaH_set for every other key, every new key and every further
+**    metamethod step, which run the stock loops' remaining steps);
+**  - BarDroidLuaFastCall: luaD_precall's and luaD_poscall's work inline for calls and tail calls (varargs included)
+**    that need no stack or CallInfo growth, no call or return hook and no __call (everything else: luaD_precall);
 **  - BarDroidLuaFastCompare: == of numbers, strings, booleans and nil, < and <= of numbers inline;
-**  - BarDroidLuaPrefetch: cache prefetches only (a called Lua function's second code line, constants and first
-**    upvalues; a function value as it is loaded into a register, before the call that usually follows).
+**  - BarDroidLuaFastIter: a generic for's call of a C iterator (next, ipairs' step) without luaD_call;
+**  - BarDroidLuaPrefetch: cache prefetches only (a called Lua function's first two code lines, constants and first
+**    upvalues as soon as its closure and Proto are known; a function value as it is loaded into a register).
 ** Each fast path writes what the stock path writes, in the same order where anything could observe it (stack slots,
 ** CallInfo fields, L->savedpc, L->base, L->top, table flags, GC barriers), so errors, hooks, tracebacks, the GC and
 ** C functions see the same state. Nothing here allocates where stock does not, or the other way round.
@@ -1042,13 +1044,16 @@ BD_INLINE int bd_poscall (lua_State *L, StkId firstResult) {
         goto *bd_ops[GET_OPCODE(i)]; \
       }
 
-/* a called Lua function's second code line (its first is loaded at once), constants and first upvalues */
-#define BD_PREFETCH_ENTRY(ncl_) { \
+/* a called Lua function's first two code lines, constants and first upvalues, issued as soon as its closure and
+   prototype are known, so they load while the call is set up (prefetches only) */
+#define BD_PREFETCH_ENTRY(ncl_,p_) { \
         if (prefetch) { \
           const LClosure *pcl_ = (ncl_); \
+          const Proto *pp_ = (p_); \
           const int pnup_ = pcl_->nupvalues; \
-          __builtin_prefetch(pc + 16); \
-          __builtin_prefetch(k); \
+          __builtin_prefetch(pp_->code); \
+          __builtin_prefetch(pp_->code + 16); \
+          __builtin_prefetch(pp_->k); \
           if (pnup_ > 0) __builtin_prefetch(pcl_->upvals[0]); \
           if (pnup_ > 1) __builtin_prefetch(pcl_->upvals[1]); \
           if (pnup_ > 2) __builtin_prefetch(pcl_->upvals[2]); \
@@ -1396,6 +1401,7 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
         if (likely_bd(!((char *)L->stack_last - (char *)L->top <= p->maxstacksize*(int)sizeof(TValue)))) {
           CallInfo *ci;
           StkId st, nbase;
+          BD_PREFETCH_ENTRY(&ncl->l, p);
           L->ci->savedpc = L->savedpc;
           if (likely_bd(!p->is_vararg)) {  /* no varargs? */
             nbase = ra + 1;
@@ -1434,7 +1440,6 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
           base = nbase;
           k = p->k;
           pc = p->code;
-          BD_PREFETCH_ENTRY(cl);
           BD_DISPATCH();
         }
       }
@@ -1491,6 +1496,7 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
         CallInfo *ci;
         StkId st, nbase, func, pfunc;
         int aux;
+        BD_PREFETCH_ENTRY(ncl, p);
         L->ci->savedpc = L->savedpc;
         if (likely_bd(!p->is_vararg)) {  /* no varargs? */
           nbase = ra + 1;
@@ -1539,7 +1545,6 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
         base = L->base;
         k = p->k;
         pc = L->savedpc;
-        BD_PREFETCH_ENTRY(cl);
         BD_DISPATCH();
       }
     }
