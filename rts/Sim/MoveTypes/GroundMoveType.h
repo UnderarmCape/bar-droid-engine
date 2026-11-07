@@ -161,6 +161,8 @@ public:
 	// order and on any thread; the checksum sees the stock writes in the stock order.
 	void BarDroidUpdateRecorded();
 	bool BarDroidReplayRecorded();
+	// (BarDroidMoveParallelHeading, stage 2) ChangeHeading the same way, in a frame where it can call no unit script
+	void BarDroidChangeHeadingRecorded(short newHeading);
 	// the unit's and its ground move type's lines that stage reads first (addresses only)
 	static void BarDroidPrefetchLines(const CUnit* unit, int stage);
 	// the ground cells (normals, slopes or heights) the stage reads at the unit's position (reads the position, which

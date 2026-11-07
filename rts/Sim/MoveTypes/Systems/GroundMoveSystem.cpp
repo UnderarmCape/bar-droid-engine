@@ -31,6 +31,7 @@ CONFIG(bool, BarDroidMovePrefetch).defaultValue(true).description("BAR Droid: th
 CONFIG(bool, BarDroidMoveStaticSkip).defaultValue(true).description("BAR Droid: the general move system skips the empty Update of static move types (exact); 0: as stock");
 CONFIG(bool, BarDroidMoveAvoid).defaultValue(true).description("BAR Droid: obstacle avoidance queries units only (it skipped every feature) (exact); 0: as stock");
 CONFIG(bool, BarDroidMoveRawSearch).defaultValue(true).description("BAR Droid: raw path searches call the speed-mod function directly, without a std::function (exact); 0: as stock");
+CONFIG(bool, BarDroidMoveParallelHeading).defaultValue(true).description("BAR Droid: the ground units' heading changes on every thread when none can call its unit script, their synced writes hashed afterwards in the stock order (exact); 0: as stock");
 CONFIG(bool, BarDroidMoveParallelUpdate).defaultValue(true).description("BAR Droid: the ground units' final position update on every thread, their synced writes hashed afterwards in the stock order (exact); 0: as stock");
 CONFIG(bool, BarDroidSyncFast).defaultValue(true).description("BAR Droid: the sync checker hashes 1-16 byte writes with xxHash's short-input function inlined (the same hash); 0: as stock");
 
@@ -43,6 +44,8 @@ namespace BarDroidMove {
 	bool avoid = true;
 	bool rawSearch = true;
 	bool parallelUpdate = true;
+	bool parallelHeading = true;
+	std::atomic<bool> headingNeedsSerial = {false};
 
 	void ReadConfig() {
 		const bool all = configHandler->GetBool("BarDroidMoveAll");
@@ -55,6 +58,7 @@ namespace BarDroidMove {
 		avoid      = all && configHandler->GetBool("BarDroidMoveAvoid");
 		rawSearch  = all && configHandler->GetBool("BarDroidMoveRawSearch");
 		parallelUpdate = all && configHandler->GetBool("BarDroidMoveParallelUpdate");
+		parallelHeading = all && configHandler->GetBool("BarDroidMoveParallelHeading");
 	#ifdef SYNCCHECK
 		CSyncChecker::barDroidSyncFast = all && configHandler->GetBool("BarDroidSyncFast");
 	#endif
@@ -146,6 +150,8 @@ void GroundMoveSystem::Update() {
 	// (the frame's switches, before any of its parallel sections; see BarDroidMove.h)
 	BarDroidMove::ReadConfig();
 	const bool barDroidPrefetch = BarDroidMove::prefetch;
+	// (set by FollowPath in stage 1 for a unit whose heading change could call its script)
+	BarDroidMove::headingNeedsSerial.store(false, std::memory_order_relaxed);
 #endif
     // TODO: GroundMove could become a component (or series of components) and then the extra indirection wouldn't be
     // needed. Though that will be a bigger change.
@@ -177,7 +183,46 @@ void GroundMoveSystem::Update() {
 
         // These two sections are ST due to the numerous synced vars being changed.
 #ifdef BARDROID_SIM
-        {
+        if (BarDroidMove::parallelHeading && !BarDroidMove::headingNeedsSerial.load(std::memory_order_relaxed)) {
+            // BAR Droid (BarDroidMoveParallelHeading): no unit's ChangeHeading can call its script this frame (its
+            // turn rate is below minScriptChangeHeading, checked in stage 1 where the events were set); it then
+            // touches only its own unit (heading, direction vectors, mid and aim positions; reads the ground normal
+            // under it), so the units run on every thread with their synced writes recorded, and the stock loop,
+            // in its order, hashes them.
+            auto view = Sim::registry.view<ChangeHeadingEvent>();
+            size_t k = 0;
+
+            for_mt(0, view.size(), [&view](const int i){
+                ChangeHeadingEvent& event = view.get<ChangeHeadingEvent>(view.storage<ChangeHeadingEvent>()[i]);
+
+                if (!event.changed)
+                    return;
+
+                CUnit* unit = unitHandler.GetUnit(event.unitId);
+                static_cast<CGroundMoveType*>(unit->moveType)->BarDroidChangeHeadingRecorded(event.deltaHeading);
+            });
+
+            if (barDroidPrefetch) {
+                barDroidOrder.clear();
+                view.each([](ChangeHeadingEvent& event){
+                    if (event.changed)
+                        barDroidOrder.push_back(unitHandler.GetUnit(event.unitId));
+                });
+                BarDroidPrefetchStart(CGroundMoveType::BARDROID_STAGE_REPLAY);
+            }
+
+            view.each([barDroidPrefetch, &k](ChangeHeadingEvent& event){
+                if (event.changed) {
+                    if (barDroidPrefetch)
+                        BarDroidPrefetchStep(k++, CGroundMoveType::BARDROID_STAGE_REPLAY);
+
+                    CUnit* unit = unitHandler.GetUnit(event.unitId);
+                    CGroundMoveType* moveType = static_cast<CGroundMoveType*>(unit->moveType);
+                    moveType->BarDroidReplayRecorded();
+                    event.changed = false;
+                }
+            });
+        } else {
             auto view = Sim::registry.view<ChangeHeadingEvent>();
             size_t k = 0;
 
