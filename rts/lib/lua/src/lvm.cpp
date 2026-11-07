@@ -874,16 +874,16 @@ BD_INLINE TValue *bd_rawset (lua_State *L, Table *t, const TValue *key) {
 }
 
 
-/* luaV_gettable's loop from where its first step found metamethod `tm' of table `t' (loop counter 1 on) */
+/* luaV_gettable's loop from where its step loop0 - 1 found metamethod `tm' of `t' (loop counter loop0 on) */
 BD_NOINLINE void bd_gettable_tm (lua_State *L, const TValue *t, const TValue *tm,
-                                 TValue *key, StkId val) {
+                                 TValue *key, StkId val, int loop0) {
   int loop;
   if (ttisfunction(tm)) {
     callTMres(L, val, tm, t, key);
     return;
   }
   t = tm;  /* else repeat with `tm' */
-  for (loop = 1; loop < MAXTAGLOOP; loop++) {
+  for (loop = loop0; loop < MAXTAGLOOP; loop++) {
     if (ttistable(t)) {  /* `t' is a table? */
       Table *h = hvalue(t);
       const TValue *res = bd_rawget(h, key); /* do a primitive get */
@@ -903,6 +903,26 @@ BD_NOINLINE void bd_gettable_tm (lua_State *L, const TValue *t, const TValue *tm
     t = tm;  /* else repeat with `tm' */
   }
   luaG_runerror(L, "loop in gettable");
+}
+
+
+/* luaV_gettable's loop after its first step found metamethod `tm' of `t': its second step inline when `tm' is a table
+   (an __index table: a class, a widget's environment over its System table), the rest in bd_gettable_tm; returns
+   nonzero when a metamethod may have run (the stack may have moved) */
+BD_INLINE int bd_gettable_next (lua_State *L, const TValue *t, const TValue *tm, TValue *key, StkId val) {
+  if (likely_bd(ttistable(tm))) {
+    Table *h = hvalue(tm);
+    const TValue *res = bd_rawget(h, key);  /* (the loop's step 1: t = tm) */
+    const TValue *tm2;
+    if (likely_bd(!ttisnil(res) || (tm2 = fasttm(L, h->metatable, TM_INDEX)) == NULL)) {
+      setobj2s(L, val, res);
+      return 0;
+    }
+    bd_gettable_tm(L, tm, tm2, key, val, 2);
+    return 1;
+  }
+  bd_gettable_tm(L, t, tm, key, val, 1);
+  return 1;
 }
 
 
@@ -979,8 +999,8 @@ BD_INLINE int bd_poscall (lua_State *L, StkId firstResult) {
             if (prefetch && ttisfunction(gv_)) __builtin_prefetch(clvalue(gv_)); \
           } \
           else { \
-            bd_gettable_tm(L, gt_, gtm_, gk_, gv_); \
-            base = L->base; \
+            if (bd_gettable_next(L, gt_, gtm_, gk_, gv_)) \
+              base = L->base; \
           } \
         } \
         else \
@@ -1127,8 +1147,8 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
       else {
         TValue g;
         sethvalue(L, &g, h);
-        bd_gettable_tm(L, &g, tm, rb, ra);
-        base = L->base;
+        if (bd_gettable_next(L, &g, tm, rb, ra))
+          base = L->base;
       }
     }
     else {
