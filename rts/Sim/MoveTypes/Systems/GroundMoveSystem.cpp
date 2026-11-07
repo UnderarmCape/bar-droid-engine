@@ -23,6 +23,7 @@
 #include "System/Sync/SyncChecker.h"
 #endif
 
+CONFIG(bool, BarDroidMoveAll).defaultValue(true).description("BAR Droid: 0 turns every BarDroidMove* switch and BarDroidSyncFast off at once (an A/B of the whole movement package in one run); 1: each as its own switch says");
 CONFIG(bool, BarDroidMoveQuadStamp).defaultValue(true).description("BAR Droid: quadfield queries remember the objects they passed in per-thread arrays, not in the objects (exact); 0: as stock");
 CONFIG(bool, BarDroidMoveBlockMemo).defaultValue(true).description("BAR Droid: the movement's blocking-map queries memoize obstacles in epoch-tagged per-thread tables (exact); 0: as stock");
 CONFIG(bool, BarDroidMoveExitOnly).defaultValue(true).description("BAR Droid: exit-only footprint tests skip tiles without exit-only squares (exact); 0: as stock");
@@ -42,15 +43,17 @@ namespace BarDroidMove {
 	bool rawSearch = true;
 
 	void ReadConfig() {
-		quadStamp  = configHandler->GetBool("BarDroidMoveQuadStamp");
-		blockMemo  = configHandler->GetBool("BarDroidMoveBlockMemo");
-		exitOnly   = configHandler->GetBool("BarDroidMoveExitOnly");
-		prefetch   = configHandler->GetBool("BarDroidMovePrefetch");
-		staticSkip = configHandler->GetBool("BarDroidMoveStaticSkip");
-		avoid      = configHandler->GetBool("BarDroidMoveAvoid");
-		rawSearch  = configHandler->GetBool("BarDroidMoveRawSearch");
+		const bool all = configHandler->GetBool("BarDroidMoveAll");
+
+		quadStamp  = all && configHandler->GetBool("BarDroidMoveQuadStamp");
+		blockMemo  = all && configHandler->GetBool("BarDroidMoveBlockMemo");
+		exitOnly   = all && configHandler->GetBool("BarDroidMoveExitOnly");
+		prefetch   = all && configHandler->GetBool("BarDroidMovePrefetch");
+		staticSkip = all && configHandler->GetBool("BarDroidMoveStaticSkip");
+		avoid      = all && configHandler->GetBool("BarDroidMoveAvoid");
+		rawSearch  = all && configHandler->GetBool("BarDroidMoveRawSearch");
 	#ifdef SYNCCHECK
-		CSyncChecker::barDroidSyncFast = configHandler->GetBool("BarDroidSyncFast");
+		CSyncChecker::barDroidSyncFast = all && configHandler->GetBool("BarDroidSyncFast");
 	#endif
 	}
 }
@@ -219,6 +222,9 @@ void GroundMoveSystem::Update() {
 	{
         auto view = Sim::registry.view<GroundMoveType>();
 #ifdef BARDROID_SIM
+        {
+        // (BAR Droid: these two parts had no timer of their own)
+        SCOPED_TIMER("Sim::Unit::MoveType::2b::UnitPosition");
         for_mt(0, view.size(), [&view, barDroidPrefetch](const int i){
             BARDROID_PREFETCH_MT(i);
 #else
@@ -233,8 +239,13 @@ void GroundMoveSystem::Update() {
 
 			moveType->UpdateUnitPosition();
 		});
+#ifdef BARDROID_SIM
+        }
+#endif
 
 #ifdef BARDROID_SIM
+		static TimerNameRegistrar barDroidTimerName("Sim::Unit::MoveType::2c::PreCollisionsST");
+		ScopedTimer barDroidTimer(hashString("Sim::Unit::MoveType::2c::PreCollisionsST"));
 		size_t k = 0;
 
 		if (barDroidPrefetch) {

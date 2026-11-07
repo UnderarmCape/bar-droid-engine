@@ -54,6 +54,9 @@ void GeneralMoveSystem::Update() {
 	{
         SCOPED_TIMER("Sim::Unit::MoveType::5::Update");
 #ifdef BARDROID_SIM
+        // (BAR Droid: the general move types' part of 5::Update, which GroundMoveSystem's stage 5 shares by name)
+        static TimerNameRegistrar barDroidTimerName("Sim::Unit::MoveType::5g::General");
+        ScopedTimer barDroidTimer(hashString("Sim::Unit::MoveType::5g::General"));
         const bool barDroidPrefetch = BarDroidMove::prefetch;
         const bool barDroidStaticSkip = BarDroidMove::staticSkip;
         size_t k = 0;
