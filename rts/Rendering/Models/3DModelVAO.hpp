@@ -126,6 +126,31 @@ private:
 	);
 	void EnableAttribs(bool inst) const;
 	void DisableAttribs() const;
+#if defined(BARDROID_SIM)
+	// BAR Droid (BarDroidInstanceOrphan 3): instance data written into a ring of two halves (mapped persistently, or each write unsynchronized; no
+	// driver sync per write; a fence per half), the instance attribute pointed at the ring while it is in use
+	bool BarDroidRingReady();
+	uint32_t BarDroidRingWrite(const SInstanceData* data, uint32_t count);
+	void BarDroidPointInstances(bool ring);
+	static constexpr uint32_t BARDROID_RING_HALF = 1u << 17;
+	uint32_t barDroidRingBuf = 0;
+	uint8_t* barDroidRingPtr = nullptr;
+	uint32_t barDroidRingPos = 0;
+	uint32_t barDroidRingHalf = 0;
+	GLsync barDroidRingFence[2] = {};
+	bool barDroidRingFailed = false;
+	bool barDroidOnRing = false;
+	// (BarDroidInstanceOrphan 4) batched instances in a pool of small buffers, each written only once idle for 4 drawn
+	// frames: never one the current render pass reads; single-instance draws take theirs as a constant attribute
+	struct BarDroidPoolBuf { GLuint id = 0; uint32_t bytes = 0; uint32_t frame = 0; };
+	std::vector<BarDroidPoolBuf> barDroidPool;
+	size_t barDroidPoolNext = 0;
+	GLuint barDroidPointedAt = 0; // (0: instVBO, as CreateVAO points it)
+	bool barDroidInstArray = true;
+	GLuint BarDroidPoolWrite(const void* data, uint32_t bytes);
+	void BarDroidPointAt(GLuint buf);
+	void BarDroidInstanceArray(bool on);
+#endif
 private:
 	static std::unique_ptr<S3DModelVAO> instance;
 private:

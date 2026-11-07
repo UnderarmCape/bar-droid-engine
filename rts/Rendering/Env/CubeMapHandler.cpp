@@ -135,6 +135,17 @@ void CubeMapHandler::Free() {
 	}
 
 	reflectionCubeFBO.Kill();
+#ifdef BARDROID_SIM
+	if (barDroidFence != nullptr) {
+		glDeleteSync(barDroidFence);
+		barDroidFence = nullptr;
+	}
+	if (barDroidPbo != 0) {
+		glDeleteBuffers(1, &barDroidPbo);
+		barDroidPbo = 0;
+	}
+	barDroidAmbientReady = false;
+#endif
 }
 
 
@@ -190,8 +201,65 @@ void CubeMapHandler::UpdateReflectionTexture()
 		glBindTexture(GL_TEXTURE_CUBE_MAP, envReflectionTexID);
 		glGenerateMipmapEXT(GL_TEXTURE_CUBE_MAP);
 		glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+	#ifdef BARDROID_SIM
+		if (barDroidAmbientWanted)
+			BarDroidReadAmbient();
+	#endif
 	}
 }
+
+#ifdef BARDROID_SIM
+bool CubeMapHandler::BarDroidAmbientCube(float rgb[18])
+{
+	barDroidAmbientWanted = true;
+	if (!barDroidAmbientReady)
+		return false;
+	std::copy(std::begin(barDroidAmbient), std::end(barDroidAmbient), rgb);
+	return true;
+}
+
+// the last read's result if the GPU has written it (never waited for), then the next read: the 1x1 level of each face
+void CubeMapHandler::BarDroidReadAmbient()
+{
+	if (barDroidPbo == 0) {
+		glGenBuffers(1, &barDroidPbo);
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, barDroidPbo);
+		glBufferData(GL_PIXEL_PACK_BUFFER, 6 * 4, nullptr, GL_STREAM_READ);
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+	}
+	if (barDroidFence != nullptr) {
+		const GLenum r = glClientWaitSync(barDroidFence, 0, 0);
+		if (r != GL_ALREADY_SIGNALED && r != GL_CONDITION_SATISFIED)
+			return;
+		glDeleteSync(barDroidFence);
+		barDroidFence = nullptr;
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, barDroidPbo);
+		if (const auto* px = static_cast<const uint8_t*>(glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, 6 * 4, GL_MAP_READ_BIT)); px != nullptr) {
+			for (int i = 0; i < 6 * 3; i++)
+				barDroidAmbient[i] = px[(i / 3) * 4 + (i % 3)] / 255.0f;
+			glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+			if (!barDroidAmbientReady) {
+				const float* a = barDroidAmbient;
+				LOG("[BarDroid] reflection colours (+x -x +y -y +z -z): %.2f %.2f %.2f, %.2f %.2f %.2f, %.2f %.2f %.2f, %.2f %.2f %.2f, %.2f %.2f %.2f, %.2f %.2f %.2f",
+					a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13], a[14], a[15], a[16], a[17]);
+			}
+			barDroidAmbientReady = true;
+		}
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+	}
+	int level = 0;
+	while ((reflTexSize >> (level + 1)) > 0)
+		level++;
+	glPixelStorei(GL_PACK_ALIGNMENT, 4);
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, barDroidPbo);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, envReflectionTexID);
+	for (int f = 0; f < 6; f++)
+		glGetTexImage(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, level, GL_RGBA, GL_UNSIGNED_BYTE, reinterpret_cast<void*>(intptr_t(f * 4)));
+	glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+	barDroidFence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+}
+#endif
 
 void CubeMapHandler::CreateReflectionFace(unsigned int glFace, bool skyOnly)
 {
