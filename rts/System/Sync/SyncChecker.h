@@ -37,6 +37,10 @@ class CSyncChecker {
 		static void debugSyncCheckThreading();
 		static void Sync(uint32_t val);
 		static void Sync(const void* p, unsigned size);
+		#ifdef BARDROID_SIM
+		// BAR Droid: BarDroidSyncFast (set once a frame by BarDroidMove::ReadConfig; SyncChecker.cpp)
+		static bool barDroidSyncFast;
+		#endif
 		#ifdef SYNC_HISTORY
 		static std::tuple<unsigned, unsigned, unsigned*> GetFrameHistory(unsigned rewindFrames);
 		static std::pair<unsigned, unsigned*> GetHistory() { return std::make_pair(nextHistoryIndex, logs.data()); };

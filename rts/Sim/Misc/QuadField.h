@@ -144,6 +144,17 @@ public:
 		const unsigned int collisionStateBits = 0xFFFFFFFF
 	);
 
+#ifdef BARDROID_SIM
+	// BAR Droid: GetSolidsExact without the features (the units in the same order), for callers that skip features
+	void BarDroidGetSolidUnitsExact(
+		QuadFieldQuery& qfq,
+		const float3& pos,
+		const float radius,
+		const unsigned int physicalStateBits = 0xFFFFFFFF,
+		const unsigned int collisionStateBits = 0xFFFFFFFF
+	);
+#endif
+
 
 	bool InsertUnitIf(CUnit* unit, const float3& wpos);
 	bool RemoveUnitIf(CUnit* unit, const float3& wpos);

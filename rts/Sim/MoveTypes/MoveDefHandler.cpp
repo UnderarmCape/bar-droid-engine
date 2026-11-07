@@ -18,6 +18,10 @@
 
 #include "System/Misc/TracyDefs.h"
 
+#ifdef BARDROID_SIM
+#include "Sim/MoveTypes/BarDroidMove.h"
+#endif
+
 CR_BIND(MoveDef, ())
 CR_BIND(MoveDefHandler, )
 
@@ -511,6 +515,29 @@ bool MoveDef::DoRawSearch(
 	float minSpeedMod = std::numeric_limits<float>::max();
 	int   maxBlockBit = CMoveMath::BLOCK_NONE;
 
+#ifdef BARDROID_SIM
+	// BAR Droid (BarDroidMoveRawSearch): the same speed-mod call without a std::function (its directional lambda did
+	// not fit std::function's inline buffer: a heap allocation and an indirect call per tested square)
+	const bool barDroidDirect = BarDroidMove::rawSearch;
+	const bool barDroidDirectional = md->allowDirectionalPathing;
+	const float3 barDroidMoveDir = startPos - endPos;
+
+	std::function<float(int x, int z)> getPosSpeedMod;
+	if (!barDroidDirect) {
+		if (md->allowDirectionalPathing) {
+			float3 testMoveDir = startPos - endPos;
+			getPosSpeedMod = [this, testMoveDir](int x, int z){ return CMoveMath::GetPosSpeedMod(*this, x, z, testMoveDir); };
+		} else {
+			getPosSpeedMod = [&](int x, int z){ return CMoveMath::GetPosSpeedMod(*this, x, z); };
+		}
+	}
+
+	auto terrainTest = [this, &minSpeedMod, speedModThreshold, &getPosSpeedMod, barDroidDirect, barDroidDirectional, &barDroidMoveDir](int x, int z) -> bool {
+		if (x >= mapDims.mapx || x < 0 || z >= mapDims.mapy || z < 0) { return true; }
+
+		const float speedMod = (!barDroidDirect)? getPosSpeedMod(x, z):
+			(barDroidDirectional? CMoveMath::GetPosSpeedMod(*this, x, z, barDroidMoveDir): CMoveMath::GetPosSpeedMod(*this, x, z));
+#else
 	std::function<float(int x, int z)> getPosSpeedMod;
 	if (md->allowDirectionalPathing) {
 		float3 testMoveDir = startPos - endPos;
@@ -523,6 +550,7 @@ bool MoveDef::DoRawSearch(
 		if (x >= mapDims.mapx || x < 0 || z >= mapDims.mapy || z < 0) { return true; }
 
 		const float speedMod = getPosSpeedMod(x, z);
+#endif
 		minSpeedMod = std::min(minSpeedMod, speedMod);
 
 		return (speedMod > speedModThreshold);
@@ -650,6 +678,25 @@ bool MoveDef::TestMoveSquareRange(
 	bool retTestMove = true;
 
 	if (testTerrain) {
+#ifdef BARDROID_SIM
+		// BAR Droid (BarDroidMoveRawSearch): the same calls without a std::function
+		const bool barDroidDirect = BarDroidMove::rawSearch;
+		const bool barDroidDirectional = collider.moveDef->allowDirectionalPathing;
+
+		std::function<float(int x, int z)> getPosSpeedMod;
+		if (!barDroidDirect) {
+			if (collider.moveDef->allowDirectionalPathing) {
+				getPosSpeedMod = [&](int x, int z){ return CMoveMath::GetPosSpeedMod(*this, x, z, testMoveDir); };
+			} else {
+				getPosSpeedMod = [&](int x, int z){ return CMoveMath::GetPosSpeedMod(*this, x, z); };
+			}
+		}
+
+		for (int z = zmin; retTestMove && z <= zmax; ++z) {
+			for (int x = xmin; retTestMove && x <= xmax; ++x) {
+				const float speedMod = (!barDroidDirect)? getPosSpeedMod(x, z):
+					(barDroidDirectional? CMoveMath::GetPosSpeedMod(*this, x, z, testMoveDir): CMoveMath::GetPosSpeedMod(*this, x, z));
+#else
 		std::function<float(int x, int z)> getPosSpeedMod;
 		if (collider.moveDef->allowDirectionalPathing) {
 			getPosSpeedMod = [&](int x, int z){ return CMoveMath::GetPosSpeedMod(*this, x, z, testMoveDir); };
@@ -660,6 +707,7 @@ bool MoveDef::TestMoveSquareRange(
 		for (int z = zmin; retTestMove && z <= zmax; ++z) {
 			for (int x = xmin; retTestMove && x <= xmax; ++x) {
 				const float speedMod = getPosSpeedMod(x, z);
+#endif
 
 				minSpeedMod = std::min(minSpeedMod, speedMod);
 				retTestMove = (speedMod > 0.0f);

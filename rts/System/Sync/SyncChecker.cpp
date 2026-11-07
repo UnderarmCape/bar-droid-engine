@@ -13,6 +13,9 @@
 unsigned CSyncChecker::g_checksum;
 unsigned CSyncChecker::g_prevChecksum;
 int CSyncChecker::inSyncedCode;
+#ifdef BARDROID_SIM
+bool CSyncChecker::barDroidSyncFast = true;
+#endif
 
 void CSyncChecker::NewFrame()
 {
@@ -49,7 +52,18 @@ void CSyncChecker::Sync(const void* p, unsigned size)
 #endif
 	// most common cases first, make it easy for compiler to optimize for it
 	// simple xor is not enough to detect multiple zeroes, e.g.
+#ifdef BARDROID_SIM
+	// BAR Droid (BarDroidSyncFast): nearly every synced write is 1-16 bytes; take xxHash's own short-input function
+	// directly (inlined here), exactly the branch XXH3_64bits_withSeed -> XXH3_64bits_internal takes for len <= 16 with
+	// the default secret, without the out-of-line call and its length dispatch. The same 64-bit hash, cut the same way.
+	if (barDroidSyncFast && size <= 16) {
+		g_checksum = static_cast<uint32_t>(XXH3_len_0to16_64b(static_cast<const xxh_u8*>(p), static_cast<size_t>(size), XXH3_kSecret, static_cast<XXH64_hash_t>(g_checksum)));
+	} else {
+		g_checksum = spring::LiteHash(p, size, g_checksum);
+	}
+#else
 	g_checksum = spring::LiteHash(p, size, g_checksum);
+#endif
 	//LOG("[Sync::Checker] chksum=%u\n", g_checksum);
 
 #ifdef SYNC_HISTORY

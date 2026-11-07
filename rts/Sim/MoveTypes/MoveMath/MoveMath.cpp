@@ -21,6 +21,121 @@ float CMoveMath::waterDamageCost = 0.0f;
 static constexpr int FOOTPRINT_XSTEP = 2;
 static constexpr int FOOTPRINT_ZSTEP = 2;
 
+#ifdef BARDROID_SIM
+#include "Sim/MoveTypes/BarDroidMove.h"
+
+namespace {
+	// BAR Droid (BarDroidMoveBlockMemo, Sim/MoveTypes/BarDroidMove.h): a per-thread table of obstacles keyed by their
+	// address, each entry tagged with the epoch it was written in; "clear" starts a new epoch, so an entry of an older
+	// epoch counts as absent. Used two ways, both exactly as the stock code they replace:
+	//   - the memo of RangeIsBlockedHashedMt / FloodFillRangeIsBlocked: the first block type computed for an obstacle
+	//     since the last clear (the stock emilib::HashMap, cleared at the same points: a new tempNum, a flood fill);
+	//   - the "already passed" set of one RangeIsBlockedMt / IsBlockedNoSpeedModCheckDiff call (the stock test of the
+	//     obstacle's own mtTempNum slot, which wrote into every obstacle passed; one query = one epoch).
+	class BarDroidObjectTable {
+	public:
+		// the value stored for <key> in this epoch, or computes it with <make>, stores and returns it
+		template<typename F>
+		uint8_t Get(const void* key, F&& make) {
+			if (slots.empty())
+				Resize(256);
+
+			for (size_t i = Hash(key) & mask; ; i = (i + 1) & mask) {
+				Slot& s = slots[i];
+
+				if (s.epoch != epoch) {
+					const uint8_t value = make();
+					s = {key, epoch, value};
+
+					if ((++count * 2) > slots.size())
+						Resize(slots.size() * 2);
+
+					return value;
+				}
+				if (s.key == key)
+					return s.value;
+			}
+		}
+
+		// true if <key> was already added in this epoch, else adds it
+		bool TestAndSet(const void* key) {
+			bool added = false;
+			Get(key, [&added]() { added = true; return uint8_t(0); });
+			return !added;
+		}
+
+		void Clear() {
+			count = 0;
+
+			if (++epoch != 0)
+				return;
+
+			// (wrapped around after 2^32 clears: no old tag may match the new epochs)
+			for (Slot& s: slots) {
+				s = {};
+			}
+			epoch = 1;
+		}
+
+	private:
+		struct Slot {
+			const void* key = nullptr;
+			uint32_t epoch = 0;
+			uint8_t value = 0;
+		};
+
+		static size_t Hash(const void* key) {
+			const uint64_t k = reinterpret_cast<uintptr_t>(key) >> 4;
+			return static_cast<size_t>((k * 0x9E3779B97F4A7C15ull) >> 32);
+		}
+
+		void Resize(size_t n) {
+			std::vector<Slot> old = std::move(slots);
+			slots.clear();
+			slots.resize(n);
+			mask = n - 1;
+			count = 0;
+
+			for (const Slot& s: old) {
+				if (s.epoch != epoch)
+					continue;
+
+				size_t i = Hash(s.key) & mask;
+				while (slots[i].epoch == epoch)
+					i = (i + 1) & mask;
+
+				slots[i] = s;
+				++count;
+			}
+		}
+
+		std::vector<Slot> slots;
+		size_t mask = 0;
+		size_t count = 0;
+		uint32_t epoch = 1;
+	};
+
+	struct alignas(64) BarDroidThreadTables {
+		BarDroidObjectTable memo;   // the block-type memo (one epoch per stock blockMap clear)
+		BarDroidObjectTable passed; // one query's passed obstacles (one epoch per query)
+	};
+	std::array<BarDroidThreadTables, ThreadPool::MAX_THREADS> barDroidTables;
+
+	// the stock per-object test-and-set ("mtTempNum[thread] == tempNum"), or the per-thread table's
+	inline bool BarDroidPassed(CSolidObject* collidee, int thread, int tempNum)
+	{
+		if (BarDroidMove::blockMemo)
+			return barDroidTables[thread].passed.TestAndSet(collidee);
+
+		if (collidee->mtTempNum[thread] == tempNum)
+			return true;
+
+		collidee->mtTempNum[thread] = tempNum;
+		return false;
+	}
+}
+#endif
+
 MoveTypes::CheckCollisionQuery::CheckCollisionQuery(const CSolidObject* ref)
 	: unit(ref)
 	, moveDef(ref->moveDef)
@@ -175,6 +290,11 @@ CMoveMath::BlockType CMoveMath::IsBlockedNoSpeedModCheckDiff(const MoveDef& move
 
 	const int tempNum = gs->GetMtTempNum(thread);
 
+#ifdef BARDROID_SIM
+	if (BarDroidMove::blockMemo)
+		barDroidTables[thread].passed.Clear();
+#endif
+
 	// footprints are point-symmetric around <xSquare, zSquare>
 	for (int z = zmin; z <= zmax; z += FOOTPRINT_ZSTEP) {
 		const int zOffset = z * mapDims.mapx;
@@ -190,10 +310,15 @@ CMoveMath::BlockType CMoveMath::IsBlockedNoSpeedModCheckDiff(const MoveDef& move
 			for (size_t i = 0, n = cell.size(); i < n; i++) {
 				CSolidObject* collidee = cell[i];
 
+#ifdef BARDROID_SIM
+				if (BarDroidPassed(collidee, thread, tempNum))
+					continue;
+#else
 				if (collidee->mtTempNum[thread] == tempNum)
 					continue;
 
 				collidee->mtTempNum[thread] = tempNum;
+#endif
 
 				if (((ret |= ObjectBlockType(collidee, &colliderInfo)) & BLOCK_STRUCTURE) == 0)
 					continue;
@@ -366,6 +491,11 @@ CMoveMath::BlockType CMoveMath::RangeIsBlockedMt(int xmin, int xmax, int zmin, i
 	RECOIL_DETAILED_TRACY_ZONE;
 	BlockType ret = BLOCK_NONE;
 
+#ifdef BARDROID_SIM
+	if (BarDroidMove::blockMemo)
+		barDroidTables[thread].passed.Clear();
+#endif
+
 	// footprints are point-symmetric around <xSquare, zSquare>
 	for (int z = zmin; z <= zmax; z += FOOTPRINT_ZSTEP) {
 		const int zOffset = z * mapDims.mapx;
@@ -376,10 +506,15 @@ CMoveMath::BlockType CMoveMath::RangeIsBlockedMt(int xmin, int xmax, int zmin, i
 			for (size_t i = 0, n = cell.size(); i < n; i++) {
 				CSolidObject* collidee = cell[i];
 
+#ifdef BARDROID_SIM
+				if (BarDroidPassed(collidee, thread, tempNum))
+					continue;
+#else
 				if (collidee->mtTempNum[thread] == tempNum)
 					continue;
 
 				collidee->mtTempNum[thread] = tempNum;
+#endif
 
 				if (((ret |= ObjectBlockType(collidee, collider)) & BLOCK_STRUCTURE) == 0)
 					continue;
@@ -414,10 +549,47 @@ CMoveMath::BlockType CMoveMath::RangeIsBlockedHashedMt(int xmin, int xmax, int z
 	spring::unordered_map<CSolidObject*, CMoveMath::BlockType>& blockMap = blockMaps[thread];
 	int& lastTempNum = lastTempNums[thread];
 
+#ifdef BARDROID_SIM
+	BarDroidObjectTable& memo = barDroidTables[thread].memo;
+
+	if (lastTempNum != tempNum) {
+		// (both memos cleared at the stock's points whichever is in use, so the switch may change at any time)
+		blockMap.clear();
+		memo.Clear();
+		lastTempNum = tempNum;
+	}
+
+	if (BarDroidMove::blockMemo) {
+		// footprints are point-symmetric around <xSquare, zSquare>
+		for (int z = zmin; z <= zmax; z += FOOTPRINT_ZSTEP) {
+			const int zOffset = z * mapDims.mapx;
+
+			for (int x = xmin; x <= xmax; x += FOOTPRINT_XSTEP) {
+				const CGroundBlockingObjectMap::BlockingMapCell& cell = groundBlockingObjectMap.GetCellUnsafeConst(zOffset + x);
+
+				for (size_t i = 0, n = cell.size(); i < n; i++) {
+					CSolidObject* collidee = cell[i];
+
+					ret |= BlockType(BlockTypes(memo.Get(collidee, [collidee, collider]() {
+						return uint8_t(int(ObjectBlockType(collidee, collider)));
+					})));
+
+					if ((ret & BLOCK_STRUCTURE) == 0)
+						continue;
+
+					return ret;
+				}
+			}
+		}
+
+		return ret;
+	}
+#else
 	if (lastTempNum != tempNum){
 		blockMap.clear();
 		lastTempNum = tempNum;
 	}
+#endif
 
 	// footprints are point-symmetric around <xSquare, zSquare>
 	for (int z = zmin; z <= zmax; z += FOOTPRINT_ZSTEP) {
@@ -460,6 +632,38 @@ void CMoveMath::FloodFillRangeIsBlocked(const MoveDef& moveDef, const CSolidObje
 			? MoveTypes::CheckCollisionQuery(collider)
 			: MoveTypes::CheckCollisionQuery(&moveDef, {float(areaToSample.x1*SQUARE_SIZE), 0.f, float(areaToSample.z1*SQUARE_SIZE)});
 
+#ifdef BARDROID_SIM
+	// (cleared here as the stock map is, lastTempNum left as it is: a later RangeIsBlockedHashedMt with the same tempNum
+	// sees this fill's entries in either memo)
+	BarDroidObjectTable& memo = barDroidTables[thread].memo;
+	memo.Clear();
+
+	if (BarDroidMove::blockMemo) {
+		for (int z = areaToSample.z1; z < areaToSample.z2; ++z) {
+			const int zOffset = z * mapDims.mapx;
+
+			for (int x = areaToSample.x1; x < areaToSample.x2; ++x) {
+				const CGroundBlockingObjectMap::BlockingMapCell& cell = groundBlockingObjectMap.GetCellUnsafeConst(zOffset + x);
+				BlockType ret = BLOCK_NONE;
+
+				for (size_t i = 0, n = cell.size(); i < n; i++) {
+					CSolidObject* collidee = cell[i];
+
+					ret |= BlockType(BlockTypes(memo.Get(collidee, [collidee, &colliderInfo]() {
+						return uint8_t(int(ObjectBlockType(collidee, &colliderInfo)));
+					})));
+
+					if ((ret & BLOCK_STRUCTURE) != 0)
+						break;
+				}
+				results.emplace_back(ret);
+			}
+		}
+
+		return;
+	}
+#endif
+
 	for (int z = areaToSample.z1; z < areaToSample.z2; ++z) {
 		const int zOffset = z * mapDims.mapx;
 
@@ -486,6 +690,12 @@ void CMoveMath::FloodFillRangeIsBlocked(const MoveDef& moveDef, const CSolidObje
 }
 
 bool CMoveMath::RangeHasExitOnly(int xmin, int xmax, int zmin, int zmax, const ObjectCollisionMapHelper& object) {
+#ifdef BARDROID_SIM
+	// BAR Droid (BarDroidMoveExitOnly): every square tested below lies in the tiles of the clamped rectangle; if none of
+	// them holds an exit-only square, no test can succeed (the same answer without the squares)
+	if (BarDroidMove::exitOnly && (xmin <= xmax) && (zmin <= zmax) && !yardmapStatusEffectsMap.BarDroidAnyExitOnly(xmin, xmax, zmin, zmax))
+		return false;
+#endif
 	for (int z = zmin; z <= zmax; z += FOOTPRINT_ZSTEP) {
 		for (int x = xmin; x <= xmax; x += FOOTPRINT_XSTEP)
 			if (object.IsExitOnlyAt(x, z)) return true;
