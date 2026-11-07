@@ -50,6 +50,8 @@ extern int spring_lua_unsynced_srand(lua_State* L);
 //                 first upvalues, and a function value as it is loaded into a register
 //   strHash:      BarDroidLuaStrHash, string interning compares the stored hash before length and bytes
 //   allocRelaxed: BarDroidLuaAllocRelaxed, the allocator's byte and call counters with one relaxed atomic add each
+//   fastIter:     BarDroidLuaFastIter, a generic for's call of a C iterator (next, ipairs' step) set up in the VM (no
+//                 luaD_call / luaD_precall / luaD_poscall calls), as fastCall does for calls; needs vm
 struct BarDroidLuaSwitches {
 	int vm;
 	int fastTable;
@@ -58,6 +60,7 @@ struct BarDroidLuaSwitches {
 	int prefetch;
 	int strHash;
 	int allocRelaxed;
+	int fastIter;
 };
 extern BarDroidLuaSwitches barDroidLua;
 // (LuaHandle.cpp; engine builds only)

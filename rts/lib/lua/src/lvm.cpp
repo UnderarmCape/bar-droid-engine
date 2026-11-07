@@ -818,6 +818,9 @@ void luaV_execute (lua_State *L, int nexeccalls) {
 */
 
 #define BD_INLINE	static inline __attribute__((always_inline))
+/* (branch hints for the fast paths' layout: the function has no PGO profile yet) */
+#define likely_bd(x)	__builtin_expect(!!(x), 1)
+#define unlikely_bd(x)	__builtin_expect(!!(x), 0)
 #define BD_NOINLINE	static __attribute__((noinline, hot))
 
 #if (ENABLE_USERSTATE_LOCKS == 0)
@@ -846,7 +849,7 @@ BD_INLINE const TValue *bd_getstr (Table *t, TString *key) {
 
 /* luaH_get: its string case and the array part of its integer case here, the rest in luaH_get itself */
 BD_INLINE const TValue *bd_rawget (Table *t, const TValue *key) {
-  if (ttisstring(key))
+  if (likely_bd(ttisstring(key)))
     return bd_getstr(t, rawtsvalue(key));
   if (ttisnumber(key)) {
     int k;
@@ -865,7 +868,7 @@ BD_INLINE const TValue *bd_rawget (Table *t, const TValue *key) {
 BD_INLINE TValue *bd_rawset (lua_State *L, Table *t, const TValue *key) {
   const TValue *p = bd_rawget(t, key);
   t->flags = 0;
-  if (p != luaO_nilobject)
+  if (likely_bd(p != luaO_nilobject))
     return lua_cast(TValue *, p);
   return luaH_set(L, t, key);
 }
@@ -946,7 +949,7 @@ BD_INLINE int bd_poscall (lua_State *L, StkId firstResult) {
   StkId res;
   int wanted, n;
   CallInfo *ci;
-  if (L->hookmask & LUA_MASKRET)
+  if (unlikely_bd(L->hookmask & LUA_MASKRET))
     return luaD_poscall(L, firstResult);
   ci = L->ci--;
   res = ci->func;  /* res == final position of 1st result */
@@ -966,12 +969,12 @@ BD_INLINE int bd_poscall (lua_State *L, StkId firstResult) {
 /* the first step of luaV_gettable(L, t, key, val) for a table `t'; anything else as stock (Protect included) */
 #define BD_GETTABLE(t_,key_,val_) { \
         const TValue *gt_ = (t_); TValue *gk_ = (key_); StkId gv_ = (val_); \
-        if (fastTable && ttistable(gt_)) { \
+        if (likely_bd(fastTable && ttistable(gt_))) { \
           Table *gh_ = hvalue(gt_); \
           const TValue *gr_ = bd_rawget(gh_, gk_); \
           const TValue *gtm_; \
           L->savedpc = pc; \
-          if (!ttisnil(gr_) || (gtm_ = fasttm(L, gh_->metatable, TM_INDEX)) == NULL) { \
+          if (likely_bd(!ttisnil(gr_) || (gtm_ = fasttm(L, gh_->metatable, TM_INDEX)) == NULL)) { \
             setobj2s(L, gv_, gr_); \
             if (prefetch && ttisfunction(gv_)) __builtin_prefetch(clvalue(gv_)); \
           } \
@@ -987,13 +990,13 @@ BD_INLINE int bd_poscall (lua_State *L, StkId firstResult) {
 /* the first step of luaV_settable(L, t, key, val) for a table `t'; anything else as stock (Protect included) */
 #define BD_SETTABLE(t_,key_,val_) { \
         const TValue *st_ = (t_); TValue *sk_ = (key_); StkId sv_ = (val_); \
-        if (fastTable && ttistable(st_)) { \
+        if (likely_bd(fastTable && ttistable(st_))) { \
           Table *sh_ = hvalue(st_); \
           TValue *so_; \
           const TValue *stm_; \
           L->savedpc = pc; \
           so_ = bd_rawset(L, sh_, sk_); \
-          if (!ttisnil(so_) || (stm_ = fasttm(L, sh_->metatable, TM_NEWINDEX)) == NULL) { \
+          if (likely_bd(!ttisnil(so_) || (stm_ = fasttm(L, sh_->metatable, TM_NEWINDEX)) == NULL)) { \
             setobj2t(L, so_, sv_); \
             sh_->flags = 0; \
             luaC_barriert(L, sh_, sv_); \
@@ -1049,6 +1052,7 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
   const bool fastCall = barDroidLua.fastCall != 0;
   const bool fastCompare = barDroidLua.fastCompare != 0;
   const bool prefetch = barDroidLua.prefetch != 0;
+  const bool fastIter = barDroidLua.fastIter != 0;
   LClosure *cl;
   StkId base;
   TValue *k;
@@ -1284,7 +1288,7 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
     L->savedpc = pc;
     if (ttype(rb) != ttype(rc))
       res = 0;  /* (equalobj) */
-    else if (fastCompare && ttisnumber(rb))
+    else if (likely_bd(fastCompare && ttisnumber(rb)))
       res = luai_numeq(nvalue(rb), nvalue(rc));
     else if (fastCompare && ttisstring(rb))
       res = (rawtsvalue(rb) == rawtsvalue(rc));  /* (luaV_equalval's default: the same object) */
@@ -1307,7 +1311,7 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
     TValue *rc = RKC(i);
     int res;
     L->savedpc = pc;
-    if (fastCompare && ttisnumber(rb) && ttisnumber(rc))
+    if (likely_bd(fastCompare && ttisnumber(rb) && ttisnumber(rc)))
       res = luai_numlt(nvalue(rb), nvalue(rc));  /* (luaV_lessthan's number case) */
     else {
       res = luaV_lessthan(L, rb, rc);
@@ -1324,7 +1328,7 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
     TValue *rc = RKC(i);
     int res;
     L->savedpc = pc;
-    if (fastCompare && ttisnumber(rb) && ttisnumber(rc))
+    if (likely_bd(fastCompare && ttisnumber(rb) && ttisnumber(rc)))
       res = luai_numle(nvalue(rb), nvalue(rc));  /* (lessequal's number case) */
     else {
       res = lessequal(L, rb, rc);
@@ -1360,12 +1364,12 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
     L->savedpc = pc;
     /* luaD_precall without its calls: a function (no __call), no call hook, a free CallInfo (inc_ci without growCI),
        room on the stack (luaD_checkstack without luaD_growstack), and for a Lua function no varargs */
-    if (fastCall && ttisfunction(ra) && !(L->hookmask & LUA_MASKCALL) && L->ci != L->end_ci) {
+    if (likely_bd(fastCall && ttisfunction(ra) && !(L->hookmask & LUA_MASKCALL) && L->ci != L->end_ci)) {
       Closure *ncl = clvalue(ra);
       if (!ncl->c.isC) {
         Proto *p = ncl->l.p;
-        if (!p->is_vararg &&
-            !((char *)L->stack_last - (char *)L->top <= p->maxstacksize*(int)sizeof(TValue))) {
+        if (likely_bd(!p->is_vararg &&
+            !((char *)L->stack_last - (char *)L->top <= p->maxstacksize*(int)sizeof(TValue)))) {
           CallInfo *ci;
           StkId st, nbase;
           L->ci->savedpc = L->savedpc;
@@ -1516,6 +1520,33 @@ void luaV_execute_bd (lua_State *L, int nexeccalls) {
     setobjs2s(L, cb+1, ra+1);
     setobjs2s(L, cb, ra);
     L->top = cb+3;  /* func. + 2 args (state and index) */
+    /* BarDroidLuaFastIter: luaD_call(L, cb, C) for a C iterator (next, ipairs' step) without the luaD_call and
+       luaD_precall/poscall calls: the same nCcalls count around it (a yield in it fails as in stock), the same
+       CallInfo, the same results, then luaD_call's luaC_checkGC. A Lua iterator, a hook, growth or the C-stack limit:
+       luaD_call itself */
+    if (likely_bd(fastIter && ttisfunction(cb) && clvalue(cb)->c.isC && !(L->hookmask & LUA_MASKCALL) &&
+        L->ci != L->end_ci && L->nCcalls + 1 < LUAI_MAXCCALLS &&
+        !((char *)L->stack_last - (char *)L->top <= LUA_MINSTACK*(int)sizeof(TValue)))) {
+      CallInfo *ci;
+      int n;
+      L->savedpc = pc;  /* (Protect) */
+      ++L->nCcalls;
+      L->ci->savedpc = L->savedpc;
+      ci = ++L->ci;  /* now `enter' new function */
+      ci->func = cb;
+      L->base = ci->base = ci->func + 1;
+      ci->top = L->top + LUA_MINSTACK;
+      ci->nresults = GETARG_C(i);
+      bd_unlock(L);
+      n = (*clvalue(cb)->c.f)(L);  /* do the actual call */
+      bd_lock(L);
+      if (n >= 0)  /* (else PCRYIELD: luaD_call goes on without the poscall) */
+        bd_poscall(L, L->top - n);
+      L->nCcalls--;
+      luaC_checkGC(L);
+      base = L->base;  /* (Protect) */
+    }
+    else
     Protect(luaD_call(L, cb, GETARG_C(i)));
     L->top = L->ci->top;
     cb = RA(i) + 3;  /* previous call may change the stack */

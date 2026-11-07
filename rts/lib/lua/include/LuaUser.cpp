@@ -649,6 +649,6 @@ void spring_lua_format(float f, const char* fmt, char* buf)
 
 #ifdef BARDROID_SIM
 // BAR Droid: the Lua VM's switches (LuaUser.h), the CONFIG defaults until LUA_OPEN reads the engine's config
-BarDroidLuaSwitches barDroidLua = {1, 1, 1, 1, 1, 1, 1};
+BarDroidLuaSwitches barDroidLua = {1, 1, 1, 1, 1, 1, 1, 1};
 #endif
 
