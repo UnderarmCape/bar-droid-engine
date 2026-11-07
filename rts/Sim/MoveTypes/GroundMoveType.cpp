@@ -3746,6 +3746,11 @@ void CGroundMoveType::BarDroidPrefetchGround(const CUnit* u, int stage)
 {
 	using BarDroidMove::Prefetch;
 
+	// (UpdatePreCollisions reads no ground map here: OnSlope(1) returns before the slope map for every unit whose
+	// slideTolerance is under 1, BAR's; a prefetch there was a wasted page walk)
+	if (stage != BARDROID_STAGE_HEADING && stage != BARDROID_STAGE_UPDATE)
+		return;
+
 	// (clamped as the ground lookups clamp; NaN goes to 0: only an address is made from these)
 	float x = u->pos.x;
 	float z = u->pos.z;
@@ -3754,21 +3759,22 @@ void CGroundMoveType::BarDroidPrefetchGround(const CUnit* u, int stage)
 
 	switch (stage) {
 		case BARDROID_STAGE_HEADING: {
-			// CGround::GetSmoothNormal: the centre normals of rows sz-1..sz+1, columns sx-1..sx+1
+			// CGround::GetSmoothNormal: the centre normals (sx, sz), (sx2, sz), (sx, sz2), (sx2, sz2), the second
+			// row and column on the side of the square's centre the position lies on
 			const int sx = std::clamp(int(x / SQUARE_SIZE), 1, mapDims.mapx - 2);
 			const int sz = std::clamp(int(z / SQUARE_SIZE), 1, mapDims.mapy - 2);
+			const int sx2 = (((x / SQUARE_SIZE) - sx) > 0.5f)? sx + 1: sx - 1;
+			const int sz2 = (((z / SQUARE_SIZE) - sz) > 0.5f)? sz + 1: sz - 1;
+			const int cx = std::min(sx, sx2);
 			const float3* normals = readMap->GetSharedCenterNormals(true);
+			const char* row1 = reinterpret_cast<const char*>(&normals[sz  * mapDims.mapx + cx]);
+			const char* row2 = reinterpret_cast<const char*>(&normals[sz2 * mapDims.mapx + cx]);
 
-			for (int r = sz - 1; r <= sz + 1; ++r) {
-				Prefetch(&normals[r * mapDims.mapx + sx - 1]);
-				Prefetch(&normals[r * mapDims.mapx + sx + 1]);
-			}
-		} break;
-		case BARDROID_STAGE_PRECOLLISIONS: {
-			// CGround::GetSlope (OnSlope)
-			const int hx = std::clamp(int(x) / (2 * SQUARE_SIZE), 0, mapDims.hmapx - 1);
-			const int hz = std::clamp(int(z) / (2 * SQUARE_SIZE), 0, mapDims.hmapy - 1);
-			Prefetch(&readMap->GetSharedSlopeMap(true)[hx + hz * mapDims.hmapx]);
+			// (two neighbouring normals, 24 bytes: one line, or two)
+			Prefetch(row1);
+			Prefetch(row1 + 2 * sizeof(float3) - 1);
+			Prefetch(row2);
+			Prefetch(row2 + 2 * sizeof(float3) - 1);
 		} break;
 		case BARDROID_STAGE_UPDATE: {
 			// CGround::GetHeightReal (AdjustPosToWaterLine): the corner heights of the unit's square, two rows
