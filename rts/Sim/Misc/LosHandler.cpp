@@ -879,23 +879,43 @@ void CLosHandler::Update()
 		// written only by its own type's call for that unit, and an instance's key (base square, height, radius, ally
 		// team) only when it is made (CreateInstance takes no instance a unit still holds). So every type's state ends
 		// as the stock loop leaves it, call for call.
+		// (with prefetch hints along the loads the tests make: the unit eight ahead, its instances and unit def's
+		// heights four ahead; the instances' keys and the defs were most of this pass's time)
 		static std::vector<uint8_t> work;
-		static constexpr int BLOCK = 32;
+		static constexpr int BLOCK = 64;
 		const int numUnits = activeUnits.size();
 		work.resize(numUnits);
+
+		const auto PrefetchUnit = [&](int k) {
+			const CUnit* ahead = activeUnits[k];
+			BARDROID_PREFETCH(&ahead->isDead);
+			BARDROID_PREFETCH(&ahead->midPos);
+			BARDROID_PREFETCH(&ahead->los);
+			BARDROID_PREFETCH(&ahead->losRadius);
+			BARDROID_PREFETCH(&ahead->unitDef);
+		};
+		const auto PrefetchInstances = [&](int k) {
+			const CUnit* ahead = activeUnits[k];
+			for (const SLosInstance* li: ahead->los) {
+				if (li != nullptr)
+					BARDROID_PREFETCH(li);
+			}
+			if (ahead->unitDef != nullptr) {
+				BARDROID_PREFETCH(&ahead->unitDef->losHeight);
+				BARDROID_PREFETCH(&ahead->unitDef->radarHeight);
+			}
+		};
 
 		for_mt(0, (numUnits + BLOCK - 1) / BLOCK, [&](const int block) {
 			const int beg = block * BLOCK;
 			const int end = std::min(numUnits, beg + BLOCK);
 
+			for (int k = beg; k < std::min(end, beg + 8); ++k)
+				PrefetchUnit(k);
+
 			for (int i = beg; i < end; ++i) {
-				if (i + 4 < end) {
-					const CUnit* ahead = activeUnits[i + 4];
-					BARDROID_PREFETCH(&ahead->isDead);
-					BARDROID_PREFETCH(&ahead->midPos);
-					BARDROID_PREFETCH(&ahead->los);
-					BARDROID_PREFETCH(&ahead->losRadius);
-				}
+				if (i + 8 < end) PrefetchUnit(i + 8);
+				if (i + 4 < end) PrefetchInstances(i + 4);
 
 				const CUnit* u = activeUnits[i];
 				uint8_t bits = 0;

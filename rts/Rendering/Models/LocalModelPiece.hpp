@@ -61,6 +61,9 @@ struct LocalModelPiece
 
 	void SetDirtyRaw(bool state) { dirty = state; }
 	void SetDirty();
+#ifdef BARDROID_SIM
+	void SetDirtySubtree(); // (SetDirty's recursion: dirty = true down the subtree, as SetDirty did)
+#endif
 	bool GetDirty() const { return dirty; }
 	void SetFloat3(const float3& src, float3& dst); // anim-script only
 	void SetFloat(const float& src, float& dst); // anim-script only
@@ -124,7 +127,25 @@ private:
 
 	mutable std::array<bool, 2> wasUpdated; // currFrame, prevFrame
 	bool scriptSetVisible; // TODO: add (visibility) maxradius!
+public:
+	bool blockScriptAnims; // if true, Set{Position,Rotation} are ignored for this piece
+	int32_t lmodelPieceIndex; // index of this piece into LocalModel::pieces
+	int32_t scriptPieceIndex; // index of this piece into UnitScript::pieces
+
+	std::vector<LocalModelPiece*> children;
+	LocalModelPiece* parent;
+
+	std::vector<uint32_t> lodDispLists;
+	const S3DModelPiece* original;
+
+	LocalModel* localModel;
 #ifdef BARDROID_SIM
+	// BAR Droid (BarDroidAnimDirtyRange): the index of the last piece of this piece's subtree in LocalModel::pieces (pre-order:
+	// the subtree is [lmodelPieceIndex, bdLastDesc]); -1: not known (SetDirty then widens the range to everything)
+	int32_t bdLastDesc = -1;
+	void BarDroidSetLastDescendant(int32_t idx) { bdLastDesc = idx; }
+private:
+	// (kept at the end: the fields the animations read stay where they were)
 	// BAR Droid (BarDroidPieceTrigCache): memos of pure functions, never serialized (they start empty).
 	// Per axis a: bdSin[a] = math::sin(rot[a] * 0.5f) and bdCos[a] = math::cos(rot[a] * 0.5f) for the angle whose
 	// bits are bdRotKey[a] (bit a of bdTrigValid). While bdTraValid: pieceSpaceTra is the compose of position bits
@@ -139,16 +160,4 @@ private:
 	mutable uint8_t bdTrigValid = 0;
 	mutable bool bdTraValid = false;
 #endif
-public:
-	bool blockScriptAnims; // if true, Set{Position,Rotation} are ignored for this piece
-	int32_t lmodelPieceIndex; // index of this piece into LocalModel::pieces
-	int32_t scriptPieceIndex; // index of this piece into UnitScript::pieces
-
-	std::vector<LocalModelPiece*> children;
-	LocalModelPiece* parent;
-
-	std::vector<uint32_t> lodDispLists;
-	const S3DModelPiece* original;
-
-	LocalModel* localModel;
 };

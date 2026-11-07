@@ -121,29 +121,18 @@ public:
 
 	auto GetAnimArrayChecksum() const { return checksum; }
 #ifdef BARDROID_SIM
-	// BAR Droid (BarDroidAnimPrefetch): prefetch hints for CUnitScriptEngine::Tick's animation step, in three stages a
-	// few scripts ahead: this object; then its anim list, piece table and model root (read from the object); then the
-	// pieces its first anims will turn or move (read from those). Hints only: nothing is written.
+	// BAR Droid (BarDroidAnimPrefetch): prefetch hints for CUnitScriptEngine::Tick's animation step, in four stages a
+	// few scripts ahead, each reading only what the one before brought in: this object; its anim list, piece table,
+	// model root and its model's flags; the pieces its first anims will turn or move (their angles and flags, child
+	// lists, first child); those pieces' model pieces (ComposeTransform's baked transform). Hints only: nothing is
+	// written (UnitScript.cpp).
 	void BarDroidPrefetchObject() const {
 		BARDROID_PREFETCH(&anims);
 		BARDROID_PREFETCH(&pieces);
 	}
-	void BarDroidPrefetchArrays() const {
-		BARDROID_PREFETCH(anims.data());
-		if (anims.size() > 2)
-			BARDROID_PREFETCH(reinterpret_cast<const char*>(anims.data()) + 64);
-		BARDROID_PREFETCH(pieces.data());
-		BARDROID_PREFETCH(rootPiece);
-	}
-	void BarDroidPrefetchPieces() const {
-		const size_t numAnims = std::min(anims.size(), size_t(8));
-		for (size_t k = 0; k < numAnims; ++k) {
-			const size_t pieceIdx = static_cast<size_t>(anims[k].piece);
-			if (pieceIdx >= pieces.size() || pieces[pieceIdx] == nullptr)
-				continue;
-			BARDROID_PREFETCH(&pieces[pieceIdx]->GetRotation());
-		}
-	}
+	void BarDroidPrefetchArrays() const;
+	void BarDroidPrefetchPieces() const;
+	void BarDroidPrefetchModelPieces() const;
 #endif
 	void TickAllAnims(int tickRate);
 	bool TickAnimFinished();

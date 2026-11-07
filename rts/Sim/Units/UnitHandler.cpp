@@ -357,9 +357,9 @@ void CUnitHandler::UpdateUnitLosStates()
 	const bool prefetch = BarDroidUnits::losStatePrefetch;
 	for_mt(0, (numUnits + BLOCK - 1) / BLOCK, [this, numUnits, numAllyTeams, prefetch](const int block) {
 		for (int i = block * BLOCK, end = std::min(numUnits, i + BLOCK); i < end; ++i) {
-			// (BarDroidLosStatePrefetch: hints for the unit four ahead, whose status and place are read next)
-			if (prefetch && i + 4 < end) {
-				const CUnit* ahead = activeUnits[i + 4];
+			// (BarDroidLosStatePrefetch: hints for the unit eight ahead, whose status and place are read then)
+			if (prefetch && i + 8 < end) {
+				const CUnit* ahead = activeUnits[i + 8];
 				BARDROID_PREFETCH(&ahead->losStatus[0]);
 				BARDROID_PREFETCH(&ahead->pos);
 				BARDROID_PREFETCH(&ahead->isCloaked);
@@ -373,8 +373,8 @@ void CUnitHandler::UpdateUnitLosStates()
 		}
 	});
 	for (int i = 0; i < numUnits; ++i) {
-		if (prefetch && i + 8 < numUnits)
-			BARDROID_PREFETCH(&activeUnits[i + 8]->losStatus[0]);
+		if (prefetch && i + 16 < numUnits)
+			BARDROID_PREFETCH(&activeUnits[i + 16]->losStatus[0]);
 
 		CUnit* unit = activeUnits[i];
 		for (int at = 0; at < numAllyTeams; ++at) {
@@ -468,22 +468,26 @@ void CUnitHandler::UpdateUnitWeapons()
 #ifdef BARDROID_SIM
 		if (BarDroidUnits::weaponPrefetch) {
 			// BAR Droid (BarDroidWeaponPrefetch): the same UpdateWeaponVectors per unit (each touches only its own
-			// unit, weapons and pieces, as for_mt_chunk already assumed), in blocks of 32 a thread takes at once, with
-			// prefetch hints inside the block along the chain the call walks: the unit four ahead, its weapon list and
-			// script three ahead, the weapons and the script's piece table two ahead, the weapons' pieces one ahead
-			// (the loop waited on those loads: simpleperf, late 8v8, 2026-11-07)
-			static constexpr int BLOCK = 32;
+			// unit, weapons and pieces, as for_mt_chunk already assumed), in blocks of 64 a thread takes at once, with
+			// prefetch hints inside the block along the chain the call walks: the unit eight ahead, its weapon list
+			// and script six ahead, the weapons and the script's piece table four ahead, the weapons' pieces two ahead
+			// (the loop waited on those loads: simpleperf, late 8v8, 2026-11-07; a unit's call is short, hence the
+			// distances)
+			static constexpr int BLOCK = 64;
 			const int numUnits = activeUnits.size();
 
 			for_mt(0, (numUnits + BLOCK - 1) / BLOCK, [&](const int block) {
 				const int beg = block * BLOCK;
 				const int end = std::min(numUnits, beg + BLOCK);
 
+				for (int k = beg; k < std::min(end, beg + 8); ++k)
+					activeUnits[k]->BarDroidPrefetchWeaponsUnit();
+
 				for (int i = beg; i < end; ++i) {
-					if (i + 4 < end) activeUnits[i + 4]->BarDroidPrefetchWeaponsUnit();
-					if (i + 3 < end) activeUnits[i + 3]->BarDroidPrefetchWeaponsList();
-					if (i + 2 < end) activeUnits[i + 2]->BarDroidPrefetchWeaponsObjects();
-					if (i + 1 < end) activeUnits[i + 1]->BarDroidPrefetchWeaponsPieces();
+					if (i + 8 < end) activeUnits[i + 8]->BarDroidPrefetchWeaponsUnit();
+					if (i + 6 < end) activeUnits[i + 6]->BarDroidPrefetchWeaponsList();
+					if (i + 4 < end) activeUnits[i + 4]->BarDroidPrefetchWeaponsObjects();
+					if (i + 2 < end) activeUnits[i + 2]->BarDroidPrefetchWeaponsPieces();
 
 					activeUnits[i]->UpdateWeaponVectors();
 				}
@@ -505,9 +509,9 @@ void CUnitHandler::UpdateUnitWeapons()
 		for (activeUpdateUnit = 0; activeUpdateUnit < activeUnits.size(); ++activeUpdateUnit) {
 #ifdef BARDROID_SIM
 			if (prefetch) {
-				if (activeUpdateUnit + 3 < activeUnits.size()) activeUnits[activeUpdateUnit + 3]->BarDroidPrefetchWeaponsUnit();
-				if (activeUpdateUnit + 2 < activeUnits.size()) activeUnits[activeUpdateUnit + 2]->BarDroidPrefetchWeaponsList();
-				if (activeUpdateUnit + 1 < activeUnits.size()) activeUnits[activeUpdateUnit + 1]->BarDroidPrefetchWeaponsObjects();
+				if (activeUpdateUnit + 6 < activeUnits.size()) activeUnits[activeUpdateUnit + 6]->BarDroidPrefetchWeaponsUnit();
+				if (activeUpdateUnit + 4 < activeUnits.size()) activeUnits[activeUpdateUnit + 4]->BarDroidPrefetchWeaponsList();
+				if (activeUpdateUnit + 2 < activeUnits.size()) activeUnits[activeUpdateUnit + 2]->BarDroidPrefetchWeaponsObjects();
 			}
 #endif
 			activeUnits[activeUpdateUnit]->UpdateWeapons();

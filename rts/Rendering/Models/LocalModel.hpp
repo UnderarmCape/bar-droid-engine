@@ -92,21 +92,29 @@ public:
 	// already equals its modelSpaceTra and none is dirty, so that copy can be left out. Drawing-only data.
 	mutable bool barDroidPrevStale = true;
 
+	// BAR Droid: pieces is in pre-order of the piece tree (every parent before its children, each subtree one run of
+	// indices; CreateLocalModelPieces). The unit scripts' piece walk in array order and the dirty range rely on it.
+	// Spring.SetUnitPieceParent changes the tree, not the array, and a loaded game may have done so: false from then
+	// on (the walk follows the tree itself again, as stock).
+	bool barDroidPreOrder = true;
+
 	// BAR Droid (BarDroidAnimDirtyRange): every piece of this model that is dirty has its index in
-	// [barDroidDirtyLo, barDroidDirtyHi] (LocalModelPiece::SetDirty widens it; the unit scripts' piece walk clears it
-	// once every piece is clean). Starts as everything (pieces are made dirty; a loaded game's pieces too).
+	// [barDroidDirtyLo, barDroidDirtyHi] (LocalModelPiece::SetDirty widens it by the piece's whole subtree; the unit
+	// scripts' piece walk clears it once every piece is clean). Starts as everything (pieces are made dirty; a loaded
+	// game's pieces too).
 	int32_t barDroidDirtyLo = 0;
 	int32_t barDroidDirtyHi = INT32_MAX - 1;
 
-	void BarDroidMarkDirty(int32_t pieceIdx) {
-		if (pieceIdx < 0) {
-			// (a piece without its index: everything, as at the start)
+	// pieces [firstIdx, lastIdx] may be dirty now
+	void BarDroidMarkDirty(int32_t firstIdx, int32_t lastIdx) {
+		if (firstIdx < 0 || lastIdx < firstIdx) {
+			// (a piece whose subtree's indices are not known: everything, as at the start)
 			barDroidDirtyLo = 0;
 			barDroidDirtyHi = INT32_MAX - 1;
 			return;
 		}
-		barDroidDirtyLo = std::min(barDroidDirtyLo, pieceIdx);
-		barDroidDirtyHi = std::max(barDroidDirtyHi, pieceIdx);
+		barDroidDirtyLo = std::min(barDroidDirtyLo, firstIdx);
+		barDroidDirtyHi = std::max(barDroidDirtyHi, lastIdx);
 	}
 	void BarDroidClearDirtyRange() {
 		barDroidDirtyLo = INT32_MAX;
