@@ -128,11 +128,19 @@ void CUnitScriptEngine::Tick(int deltaTime)
 {
 	SCOPED_TIMER("CUnitScriptEngine::Tick");
 
-	cobEngine->Tick(deltaTime);
+	{
+#ifdef BARDROID_SIM
+		SCOPED_TIMER("CUnitScriptEngine::Tick::Cob");   // (BAR Droid: the parts timed one by one)
+#endif
+		cobEngine->Tick(deltaTime);
+	}
 
 	// tick all (COB or LUS) script instances that have registered themselves as animating
 	{
 		ZoneScopedN("CUnitScriptEngine::Tick(MT)");
+#ifdef BARDROID_SIM
+		SCOPED_TIMER("CUnitScriptEngine::Tick::Anims");
+#endif
 
 		// setting currentScript = animating[i]; is not required here, only in ST section below
 		for_mt(0, animating.size(), [&](const int i) {
@@ -141,6 +149,9 @@ void CUnitScriptEngine::Tick(int deltaTime)
 	}
 	{
 		ZoneScopedN("CUnitScriptEngine::Tick(ST)");
+#ifdef BARDROID_SIM
+		SCOPED_TIMER("CUnitScriptEngine::Tick::Finished");
+#endif
 
 		uint32_t cs = 0;
 		for (size_t i = 0; i < animating.size(); /*NO-OP*/) {
@@ -160,5 +171,10 @@ void CUnitScriptEngine::Tick(int deltaTime)
 		Sync::Assert(cs, "animating");
 	}
 
-	cobEngine->RunDeferredCallins();
+	{
+#ifdef BARDROID_SIM
+		SCOPED_TIMER("CUnitScriptEngine::Tick::Callins");
+#endif
+		cobEngine->RunDeferredCallins();
+	}
 }

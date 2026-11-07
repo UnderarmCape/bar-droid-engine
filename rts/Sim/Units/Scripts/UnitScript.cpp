@@ -201,9 +201,19 @@ void CUnitScript::TickAllAnims(int deltaTime)
 	ZoneScoped;
 
 	// optimize the memory access patterns of the procedure below
+#if defined(BARDROID_SIM)
+	// BAR Droid: most ticks the list is still sorted from the last one (one entry per piece, type and axis: the keys are
+	// unique, so a sorted list has one order and skipping the sort changes nothing)
+	const auto animLess = [](const auto& lhs, const auto& rhs) {
+		return std::tie(lhs.piece, lhs.animType, lhs.axis) < std::tie(rhs.piece, rhs.animType, rhs.axis);
+	};
+	if (!std::is_sorted(anims.begin(), anims.end(), animLess))
+		std::sort(anims.begin(), anims.end(), animLess);
+#else
 	std::sort(anims.begin(), anims.end(), [](const auto& lhs, const auto& rhs) {
 		return std::tie(lhs.piece, lhs.animType, lhs.axis) < std::tie(rhs.piece, rhs.animType, rhs.axis);
 	});
+#endif
 
 	// tick-functions; these never change address
 	static constexpr std::array<TickAnimFunc, ACount> TICK_ANIM_FUNCS = { &CUnitScript::TickTurnAnim, &CUnitScript::TickSpinAnim, &CUnitScript::TickMoveAnim, &CUnitScript::TickScaleAnim };
@@ -227,10 +237,28 @@ void CUnitScript::TickAllAnims(int deltaTime)
 
 	spring::VectorEraseIfAll(anims, [](const auto& ai) { return ai.done; });
 #if defined(BARDROID_SIM)
-	// BAR Droid (bardroid/sim): the pieces walked depth-first from a stack kept per thread (this runs on the worker
-	// threads), not breadth-first through a std::deque made for every animating unit every frame. A piece's transform
-	// comes from its parent's alone, so the order changes no result. (The DFS branch below needs C++23's explicit
-	// object parameters, which GCC 13, the official arm64 build's compiler, does not have.)
+	// BAR Droid (bardroid/sim): the model's pieces in their own array's order, which is pre-order
+	// (LocalModel::CreateLocalModelPieces: every parent before its children; one tree from the root), with each dirty
+	// piece's transform from its parent's (already final) or the identity for the root: the walk below's results
+	// exactly (a piece's transform comes from its parent's alone; SetDirty marks a piece's whole subtree), without
+	// pushing a copy of a transform for every piece of every animating unit every frame (2026-11-07: the walk was most
+	// of TickAllAnims, ~5 % of the engine's CPU in a late 8v8).
+	if (rootPiece->localModel != nullptr && !rootPiece->localModel->pieces.empty() && &rootPiece->localModel->pieces[0] == rootPiece) {
+		for (LocalModelPiece& lmp: rootPiece->localModel->pieces) {
+			if (!lmp.GetDirty())
+				continue;
+
+			lmp.SetDirtyRaw(false);
+			lmp.SetWasUpdatedRaw(true);
+			lmp.UpdatePieceSpaceTransform();
+			lmp.UpdateModelSpaceTransform((lmp.parent != nullptr) ? lmp.parent->GetModelSpaceTransformRaw() : Transform{});
+		}
+		return;
+	}
+	// the pieces walked depth-first from a stack kept per thread (this runs on the worker threads), not breadth-first
+	// through a std::deque made for every animating unit every frame. A piece's transform comes from its parent's
+	// alone, so the order changes no result. (The DFS branch below needs C++23's explicit object parameters, which
+	// GCC 13, the official arm64 build's compiler, does not have.)
 	static thread_local std::vector<std::pair<LocalModelPiece*, Transform>> stack;
 	stack.clear();
 	stack.emplace_back(rootPiece, Transform{});
