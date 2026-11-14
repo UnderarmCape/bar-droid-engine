@@ -155,20 +155,24 @@ CONFIG(int, SmoothTimeOffset).defaultValue(0).headlessValue(0).description("Enab
 
 #ifdef BARDROID_SIM
 #include "Game/BarDroidSimGuard.h"
+#include "Game/PreGame.h"
 #include <atomic>
 
 CONFIG(bool, BarDroidSimOnline).defaultValue(false).description("BAR Droid: the simulation rewrite's switches as set in online games too (tests); 0: off online (stock code), as set in skirmishes and replays");
 
 bool BarDroidSimAllowed()
 {
-	// (main thread, and the loading thread as it creates Lua states; gameSetup does not change during a game)
+	// (main thread, and the loading thread as it creates Lua states; gameSetup does not change during a game, and is
+	// never null: a blank setup until one is loaded)
 	bool allowed = true;
 	const char* why = "no game";
 
 	if (configHandler != nullptr && configHandler->GetBool("BarDroidSimOnline")) {
 		why = "BarDroidSimOnline = 1";
-	} else if (gameSetup == nullptr) {
-		// the menu
+	} else if (game == nullptr && pregame == nullptr) {
+		// the menu (a game's PreGame comes first; CGame exists before its loading makes the game's Lua states)
+	} else if (!CGameSetup::ScriptLoaded()) {
+		allowed = false; why = "a game starting, its setup not received yet";
 	} else if (gameSetup->hostDemo) {
 		why = "a replay";
 	} else if (gameServer == nullptr) {
