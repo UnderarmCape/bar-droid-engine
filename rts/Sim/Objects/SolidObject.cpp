@@ -14,6 +14,7 @@
 
 #include "System/Misc/TracyDefs.h"
 #ifdef BARDROID_SIM
+#include "Game/BarDroidSimGuard.h"
 #include "System/Config/ConfigHandler.h"
 #include "System/Threading/ThreadPool.h"
 
@@ -23,8 +24,10 @@ CONFIG(int, BarDroidForGrain).defaultValue(64).minimumValue(0).maximumValue(1024
 bool CSolidObject::barDroidPrevSkip = true;
 void CSolidObject::BarDroidReadPrevSkip()
 {
-	barDroidPrevSkip = configHandler->GetBool("BarDroidPrevSkip");
-	ThreadPool::barDroidForGrain = configHandler->GetInt("BarDroidForGrain");
+	// (off online, as stock: Game/BarDroidSimGuard.h)
+	const bool sim = BarDroidSimAllowed();
+	barDroidPrevSkip = sim && configHandler->GetBool("BarDroidPrevSkip");
+	ThreadPool::barDroidForGrain = sim ? configHandler->GetInt("BarDroidForGrain") : 0;
 }
 #endif
 

@@ -4778,6 +4778,8 @@ void CLuaHandle::Cob2LuaBatch(const LuaHashString& name, std::vector<CCobDeferre
 /******************************************************************************/
 
 #ifdef BARDROID_SIM
+#include "Game/BarDroidSimGuard.h"
+
 // The Lua VM's switches (LuaUser.h) from the engine's config.
 // force: at a Lua state's creation (LUA_OPEN: handles and parsers, the loading's Lua too); else once a drawn frame
 void BarDroidLuaReadConfig(bool force)
@@ -4792,6 +4794,12 @@ void BarDroidLuaReadConfig(bool force)
 			return;
 
 		lastDrawFrame = globalRendering->drawFrame;
+	}
+
+	// off online, every switch 0 (Game/BarDroidSimGuard.h)
+	if (!BarDroidSimAllowed()) {
+		barDroidLua = BarDroidLuaSwitches{0, 0, 0, 0, 0, 0, 0, 0};
+		return;
 	}
 
 	BarDroidLuaSwitches s;

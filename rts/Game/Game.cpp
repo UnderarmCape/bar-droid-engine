@@ -153,6 +153,41 @@ CONFIG(std::string, InputTextGeo).defaultValue("");
 
 CONFIG(int, SmoothTimeOffset).defaultValue(0).headlessValue(0).description("Enables frametimeoffset smoothing, 0 = off (old version), -1 = forced 0.5,  1-20 smooth, recommended = 2-3");
 
+#ifdef BARDROID_SIM
+#include "Game/BarDroidSimGuard.h"
+#include <atomic>
+
+CONFIG(bool, BarDroidSimOnline).defaultValue(false).description("BAR Droid: the simulation rewrite's switches as set in online games too (tests); 0: off online (stock code), as set in skirmishes and replays");
+
+bool BarDroidSimAllowed()
+{
+	// (main thread, and the loading thread as it creates Lua states; gameSetup does not change during a game)
+	bool allowed = true;
+	const char* why = "no game";
+
+	if (configHandler != nullptr && configHandler->GetBool("BarDroidSimOnline")) {
+		why = "BarDroidSimOnline = 1";
+	} else if (gameSetup == nullptr) {
+		// the menu
+	} else if (gameSetup->hostDemo) {
+		why = "a replay";
+	} else if (gameServer == nullptr) {
+		allowed = false; why = "online: a remote host";
+	} else if (gameSetup->GetPlayerStartingDataCont().size() > 1) {
+		allowed = false; why = "online: other players on this host";
+	} else {
+		why = "a game hosted here for one player";
+	}
+
+	// (logged when the reason changes)
+	static std::atomic<const char*> logged = {nullptr};
+	if (logged.exchange(why, std::memory_order_relaxed) != why)
+		LOG("[BarDroidSim] the simulation rewrite %s (%s)", allowed ? "as set" : "off, stock code", why);
+
+	return allowed;
+}
+#endif
+
 CGame* game = nullptr;
 
 

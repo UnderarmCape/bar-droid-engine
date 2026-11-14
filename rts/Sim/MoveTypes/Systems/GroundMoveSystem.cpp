@@ -16,6 +16,7 @@
 #include "System/Threading/ThreadPool.h"
 
 #ifdef BARDROID_SIM
+#include "Game/BarDroidSimGuard.h"
 #include "Sim/MoveTypes/BarDroidMove.h"
 #include "Sim/MoveTypes/GroundMoveType.h"
 #include "System/Config/ConfigHandler.h"
@@ -48,7 +49,8 @@ namespace BarDroidMove {
 	std::atomic<bool> headingNeedsSerial = {false};
 
 	void ReadConfig() {
-		const bool all = configHandler->GetBool("BarDroidMoveAll");
+		// (off online: Game/BarDroidSimGuard.h)
+		const bool all = BarDroidSimAllowed() && configHandler->GetBool("BarDroidMoveAll");
 
 		quadStamp  = all && configHandler->GetBool("BarDroidMoveQuadStamp");
 		blockMemo  = all && configHandler->GetBool("BarDroidMoveBlockMemo");

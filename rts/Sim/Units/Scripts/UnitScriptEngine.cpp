@@ -21,6 +21,7 @@
 CONFIG(bool, AnimationMT).deprecated(true);
 
 #ifdef BARDROID_SIM
+#include "Game/BarDroidSimGuard.h"
 #include "Sim/Misc/BarDroidUnits.h"
 
 // BAR Droid (bardroid/units): the switches of Sim/Misc/BarDroidUnits.h; each 0 gives the stock code, each 1 the same
@@ -38,7 +39,8 @@ CONFIG(bool, BarDroidUnitsAll).defaultValue(true).description("BAR Droid: 0 turn
 
 void BarDroidUnits::ReadConfig()
 {
-	const bool all = configHandler->GetBool("BarDroidUnitsAll");
+	// (off online: Game/BarDroidSimGuard.h)
+	const bool all = BarDroidSimAllowed() && configHandler->GetBool("BarDroidUnitsAll");
 
 	animPrefetch     = all && configHandler->GetBool("BarDroidAnimPrefetch");
 	animDispatch     = all && configHandler->GetBool("BarDroidAnimDispatch");
