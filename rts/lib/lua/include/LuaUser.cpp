@@ -252,16 +252,36 @@ void spring_lua_alloc_log_error(const luaContextData* lcd)
 	e.msgPtr += SNPRINTF(e.msgPtr, sizeof(e.msgBuf) - (e.msgPtr - &e.msgBuf[0]), LUA_OOM_FMT_STR, __func__, lhn, lcd->synced, s.allocedBytes.load(), SLuaAllocLimit::MAX_ALLOC_BYTES);
 }
 
+#ifdef BARDROID_SIM
+__attribute__((hot)) // (the changed code no longer matches its PGO profile: kept with the hot code, as it was)
+#endif
 void* spring_lua_alloc(void* ud, void* ptr, size_t osize, size_t nsize)
 {
 	luaContextData* lcd = static_cast<luaContextData*>(ud);
 	SLuaAllocState* las = &lcd->allocState;
 	LuaMemPool* lmp = lcd->memPool;
 
+#ifdef BARDROID_SIM
+	// BAR Droid: BarDroidLuaAllocRelaxed, each counter moved by one relaxed add (allocedBytes by nsize - osize modulo
+	// 2^64, as the -= then +=): the same values without six ordered read-modify-writes (on arm64 each orders the
+	// loads and stores around it); nothing orders other memory by these counters
+	const bool relaxed = barDroidLua.allocRelaxed != 0;
+	if (relaxed) {
+		const std::uint64_t delta = std::uint64_t(nsize) - std::uint64_t(osize);
+		gLuaAllocState.allocedBytes.fetch_add(delta, std::memory_order_relaxed);
+		las->allocedBytes.fetch_add(delta, std::memory_order_relaxed);
+	} else {
+		gLuaAllocState.allocedBytes -= osize;
+		gLuaAllocState.allocedBytes += nsize;
+		las->allocedBytes -= osize;
+		las->allocedBytes += nsize;
+	}
+#else
 	gLuaAllocState.allocedBytes -= osize;
 	gLuaAllocState.allocedBytes += nsize;
 	las->allocedBytes -= osize;
 	las->allocedBytes += nsize;
+#endif
 
 	if (nsize == 0) {
 		// deallocation; must return NULL
@@ -288,6 +308,17 @@ void* spring_lua_alloc(void* ud, void* ptr, size_t osize, size_t nsize)
 	const spring_time t1 = spring_gettime();
 #endif
 
+#ifdef BARDROID_SIM
+	if (relaxed) {
+		gLuaAllocState.numLuaAllocs.fetch_add(1, std::memory_order_relaxed);
+#if LUA_MEASURE_ALLOC_TIME == 1
+		gLuaAllocState.luaAllocTime += (t1 - t0).toMicroSecsi();
+		las->luaAllocTime += (t1 - t0).toMicroSecsi();
+#endif
+		las->numLuaAllocs.fetch_add(1, std::memory_order_relaxed);
+		return mem;
+	}
+#endif
 	gLuaAllocState.numLuaAllocs += 1;
 #if LUA_MEASURE_ALLOC_TIME == 1
 	gLuaAllocState.luaAllocTime += (t1 - t0).toMicroSecsi();
@@ -613,4 +644,11 @@ void spring_lua_format(float f, const char* fmt, char* buf)
 	// copy the float string into dst
 	memcpy(buf, bufC, len + 1);
 }
+
+
+
+#ifdef BARDROID_SIM
+// BAR Droid: the Lua VM's switches (LuaUser.h), the CONFIG defaults until LUA_OPEN reads the engine's config
+BarDroidLuaSwitches barDroidLua = {1, 1, 1, 1, 1, 1, 1, 1};
+#endif
 

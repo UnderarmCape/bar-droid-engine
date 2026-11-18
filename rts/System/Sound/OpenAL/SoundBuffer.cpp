@@ -21,6 +21,15 @@ SoundBuffer::bufferVecT SoundBuffer::buffers;
 
 static std::vector<std::uint8_t> decodeBuffer;
 
+#ifdef BARDROID_SIM
+#include "System/Config/ConfigHandler.h"
+// BAR Droid (engine branch; Kailil, 2026-11-06: "reduce all other aspects of the game"): every sound BAR plays is
+// decoded whole into OpenAL's memory (RAM on a phone), all of them at 44.1 or 48 kHz. A 16-bit sound faster than this
+// is halved in rate (a [1 2 1] low-pass, then every second sample) until it is not: half the memory, no sound above a
+// quarter of the original rate (11 kHz at 44.1). In memory only; the game's files are untouched. 0: off.
+CONFIG(int, BarDroidSoundMaxRate).defaultValue(0).minimumValue(0).description("BAR Droid: decoded 16-bit sounds faster than this many samples a second are kept at half their rate (memory; 0: off)");
+#endif
+
 
 #pragma pack(push, 1)
 // Header copied from WavLib by Michael McTernan
@@ -228,7 +237,45 @@ bool SoundBuffer::AlGenBuffer(const std::string& file, ALenum format, const std:
 	alGenBuffers(1, &id);
 	if (!CheckError("SoundBuffer::alGenBuffers"))
 		return false;
+#ifdef BARDROID_SIM
+	// (BarDroidSoundMaxRate)
+	static const int maxRate = configHandler->GetInt("BarDroidSoundMaxRate");
+	const int ch = (format == AL_FORMAT_MONO16) ? 1 : ((format == AL_FORMAT_STEREO16) ? 2 : 0);
+	std::vector<std::int16_t> halved;
+	while (maxRate > 0 && ch > 0 && rate > maxRate && datalength >= static_cast<size_t>(ch) * 2 * 4) {
+		const std::int16_t* in = halved.empty() ? reinterpret_cast<const std::int16_t*>(data) : halved.data();
+		const size_t outFrames = (datalength / (2 * ch)) / 2;
+		std::vector<std::int16_t> out(outFrames * ch);
+		for (size_t f = 0; f < outFrames; ++f) {
+			const size_t i = 2 * f;
+			for (int c = 0; c < ch; ++c) {
+				const int a = in[(i > 0 ? i - 1 : 0) * ch + c];
+				const int b = in[i * ch + c];
+				const int d = in[(i + 1) * ch + c];
+				out[f * ch + c] = static_cast<std::int16_t>((a + 2 * b + d) / 4);
+			}
+		}
+		halved.swap(out);
+		datalength = outFrames * ch * 2;
+		rate /= 2;
+	}
+	if (!halved.empty())
+		data = reinterpret_cast<const std::uint8_t*>(halved.data());
+#endif
 	alBufferData(id, format, (ALvoid*) data, datalength, rate);
+#ifdef BARDROID_SIM
+	{
+		// BAR Droid: what the decoded sounds hold in OpenAL's memory (RAM on a phone), as they load
+		static size_t total = 0, stereo = 0, hiRate = 0, files = 0;
+		const size_t before = total;
+		total += datalength; files++;
+		if (format == AL_FORMAT_STEREO16 || format == AL_FORMAT_STEREO8) stereo += datalength;
+		if (rate > 24000) hiRate += datalength;
+		if ((before >> 24) != (total >> 24) || (files % 250) == 0)
+			LOG("[BarDroid] sound buffers: %u files, %.0f MB (stereo %.0f MB, over 24 kHz %.0f MB)",
+				static_cast<unsigned>(files), total / 1048576.0, stereo / 1048576.0, hiRate / 1048576.0);
+	}
+#endif
 	return CheckError("SoundBuffer::alBufferData");
 }
 

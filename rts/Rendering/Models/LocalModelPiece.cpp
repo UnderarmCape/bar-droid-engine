@@ -4,6 +4,10 @@
 #include "LocalModel.hpp"
 #include "Rendering/GL/myGL.h"
 #include "System/Misc/TracyDefs.h"
+#ifdef BARDROID_SIM
+#include <cstring>
+#include "Sim/Misc/BarDroidUnits.h"
+#endif
 
 CR_BIND(LocalModelPiece, )
 CR_REG_METADATA(LocalModelPiece, (
@@ -76,15 +80,47 @@ LocalModelPiece::~LocalModelPiece()
 	spring::SafeDelete(colvol);
 }
 
+#ifdef BARDROID_SIM
+// (LocalModel::barDroidPrevStale: this piece's transform will change or did)
+#define BARDROID_PREV_STALE() do { if (localModel != nullptr) localModel->barDroidPrevStale = true; } while (false)
+#else
+#define BARDROID_PREV_STALE() do {} while (false)
+#endif
+
 void LocalModelPiece::SetDirty() {
 	RECOIL_DETAILED_TRACY_ZONE;
+#ifdef BARDROID_SIM
+	// BAR Droid: the model's flags once for the whole call (every piece the recursion below marks belongs to this
+	// model and lies in this piece's subtree, [lmodelPieceIndex, bdLastDesc]: BarDroidAnimDirtyRange), then the
+	// stock recursion without them (2026-11-07: a load of the model's range for every piece marked made this the
+	// animations' slowest part)
+	if (localModel != nullptr) {
+		localModel->barDroidPrevStale = true;
+		// (a changed tree's subtrees are no runs of indices: everything)
+		localModel->BarDroidMarkDirty(lmodelPieceIndex, localModel->barDroidPreOrder ? bdLastDesc : -1);
+	}
+
+	SetDirtySubtree();
+}
+
+void LocalModelPiece::SetDirtySubtree() {
 	dirty = true;
+
+	for (LocalModelPiece* child: children) {
+		if (child->dirty)
+			continue;
+		child->SetDirtySubtree();
+	}
+#else
+	dirty = true;
+	BARDROID_PREV_STALE();
 
 	for (LocalModelPiece* child: children) {
 		if (child->dirty)
 			continue;
 		child->SetDirty();
 	}
+#endif
 }
 
 void LocalModelPiece::SetFloat3(const float3& src, float3& dst) {
@@ -177,19 +213,82 @@ Transform LocalModelPiece::GetEffectivePrevModelSpaceTransform() const
 	};
 }
 
+void LocalModelPiece::ComputePieceSpaceTransform() const
+{
+#ifdef BARDROID_SIM
+	if (BarDroidUnits::pieceTrigCache) {
+		BarDroidComputePieceSpaceTransform();
+		return;
+	}
+	// (written the stock way below: the memo no longer describes it)
+	bdTraValid = false;
+#endif
+	pieceSpaceTra = CalcPieceSpaceTransform(pos, rot, scale);
+}
+
+#ifdef BARDROID_SIM
+static inline uint32_t BarDroidBits(float f) { uint32_t u; std::memcpy(&u, &f, sizeof(u)); return u; }
+
+// BAR Droid (BarDroidPieceTrigCache): CalcPieceSpaceTransform(pos, rot, scale)'s result without recomputing what is
+// known. CalcPieceSpaceTransform returns the stored transform itself while blockScriptAnims is set, else
+// original->ComposeTransform(pos, rot, scale), a pure function of those (bits) and of the model piece's constant baked
+// transform; ComposeTransform takes FromEulerYPRNeg(-rot), whose six values are math::sin/cos(rot[a] * 0.5f) (the
+// angles negated twice: the same bits). So: the stored transform when every input's bits are the last compose's; else
+// the compose with each axis' sine and cosine reused while that angle's bits are unchanged
+// (S3DModelPiece::BarDroidComposeTransform: ComposeTransform's operations in its order). In a late 8v8 most dirty
+// pieces are children of a moved parent (unchanged themselves), and most moved ones turn about one axis.
+void LocalModelPiece::BarDroidComputePieceSpaceTransform() const
+{
+	if (blockScriptAnims)
+		return;
+
+	const uint32_t rotKey[3] = {BarDroidBits(rot.x), BarDroidBits(rot.y), BarDroidBits(rot.z)};
+	const uint32_t posKey[3] = {BarDroidBits(pos.x), BarDroidBits(pos.y), BarDroidBits(pos.z)};
+	const uint32_t scaleKey = BarDroidBits(scale);
+
+	if (bdTraValid && bdTrigValid == 7 && bdOriginal == original &&
+		rotKey[0] == bdRotKey[0] && rotKey[1] == bdRotKey[1] && rotKey[2] == bdRotKey[2] &&
+		posKey[0] == bdPosKey[0] && posKey[1] == bdPosKey[1] && posKey[2] == bdPosKey[2] &&
+		scaleKey == bdScaleKey
+	) {
+		return;
+	}
+
+	for (int a = 0; a < 3; ++a) {
+		if ((bdTrigValid & (1 << a)) != 0 && bdRotKey[a] == rotKey[a])
+			continue;
+
+		CQuaternion::BarDroidHalfAngleSinCos(rot[a], bdSin[a], bdCos[a]);
+		bdRotKey[a] = rotKey[a];
+		bdTrigValid |= uint8_t(1 << a);
+	}
+
+	pieceSpaceTra = original->BarDroidComposeTransform(pos, bdSin, bdCos, scale);
+
+	bdPosKey[0] = posKey[0];
+	bdPosKey[1] = posKey[1];
+	bdPosKey[2] = posKey[2];
+	bdScaleKey = scaleKey;
+	bdOriginal = original;
+	bdTraValid = true;
+}
+#endif
+
 void LocalModelPiece::UpdatePieceSpaceTransform()
 {
-	pieceSpaceTra = CalcPieceSpaceTransform(pos, rot, scale);
+	ComputePieceSpaceTransform();
 }
 
 void LocalModelPiece::UpdateModelSpaceTransform(const Transform& pTra)
 {
+	BARDROID_PREV_STALE();
 	modelSpaceTra = pTra * pieceSpaceTra;
 	modelSpaceMat = modelSpaceTra.ToMatrix();
 }
 
 void LocalModelPiece::UpdateModelSpaceTransform(const LocalModelPiece* parent)
 {
+	BARDROID_PREV_STALE();
 	if (parent)
 		modelSpaceTra = parent->modelSpaceTra * pieceSpaceTra;
 	else
@@ -207,10 +306,11 @@ void LocalModelPiece::UpdateChildTransformRec(bool updateChildTransform) const
 		wasUpdated[0] = true;  //update for current frame
 		updateChildTransform = true;
 
-		pieceSpaceTra = CalcPieceSpaceTransform(pos, rot, scale);
+		ComputePieceSpaceTransform();
 	}
 
 	if (updateChildTransform) {
+		BARDROID_PREV_STALE();
 		if (parent != nullptr)
 			modelSpaceTra = parent->modelSpaceTra * pieceSpaceTra;
 		else
@@ -232,8 +332,9 @@ void LocalModelPiece::UpdateParentMatricesRec() const
 
 	dirty = false;
 	wasUpdated[0] = true;  //update for current frame
+	BARDROID_PREV_STALE();
 
-	pieceSpaceTra = CalcPieceSpaceTransform(pos, rot, scale);
+	ComputePieceSpaceTransform();
 
 	if (parent != nullptr)
 		modelSpaceTra = parent->modelSpaceTra * pieceSpaceTra;

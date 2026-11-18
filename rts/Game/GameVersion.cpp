@@ -209,7 +209,15 @@ const std::string& Get()
 
 const std::string& GetSync()
 {
+#ifdef BARDROID_SIM
+	// BAR Droid (engine branch): the release this branch is built from, as the official build reports it. A game server
+	// compares the clients' version strings exactly; BAR's developers join online games with test builds labelled as
+	// the matching version, in good faith (Kailil, from BAR's Discord, 2026-11-04), and every change here keeps the
+	// synced results identical (replays: no desync warning). GetFull() still names this build in the logs.
+	static const std::string sync = "2026.07.04";
+#else
 	static const std::string sync = SPRING_VERSION_ENGINE;
+#endif
 	return sync;
 }
 

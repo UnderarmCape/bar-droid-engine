@@ -61,6 +61,9 @@ struct LocalModelPiece
 
 	void SetDirtyRaw(bool state) { dirty = state; }
 	void SetDirty();
+#ifdef BARDROID_SIM
+	void SetDirtySubtree(); // (SetDirty's recursion: dirty = true down the subtree, as SetDirty did)
+#endif
 	bool GetDirty() const { return dirty; }
 	void SetFloat3(const float3& src, float3& dst); // anim-script only
 	void SetFloat(const float& src, float& dst); // anim-script only
@@ -99,6 +102,12 @@ struct LocalModelPiece
 
 	void PostLoad();
 private:
+	// pieceSpaceTra = CalcPieceSpaceTransform(pos, rot, scale), as each of the update functions did it
+	void ComputePieceSpaceTransform() const;
+#ifdef BARDROID_SIM
+	void BarDroidComputePieceSpaceTransform() const;
+#endif
+
 	mutable CMatrix44f modelSpaceMat; // transform relative to root LMP (SYNCED), chained pieceSpaceMat's
 	mutable Transform pieceSpaceTra;  // transform relative to parent LMP (SYNCED), combines <pos> and <rot>
 	mutable Transform modelSpaceTra;  // transform relative to root LMP (SYNCED), chained pieceSpaceTra's
@@ -130,4 +139,25 @@ public:
 	const S3DModelPiece* original;
 
 	LocalModel* localModel;
+#ifdef BARDROID_SIM
+	// BAR Droid (BarDroidAnimDirtyRange): the index of the last piece of this piece's subtree in LocalModel::pieces (pre-order:
+	// the subtree is [lmodelPieceIndex, bdLastDesc]); -1: not known (SetDirty then widens the range to everything)
+	int32_t bdLastDesc = -1;
+	void BarDroidSetLastDescendant(int32_t idx) { bdLastDesc = idx; }
+private:
+	// (kept at the end: the fields the animations read stay where they were)
+	// BAR Droid (BarDroidPieceTrigCache): memos of pure functions, never serialized (they start empty).
+	// Per axis a: bdSin[a] = math::sin(rot[a] * 0.5f) and bdCos[a] = math::cos(rot[a] * 0.5f) for the angle whose
+	// bits are bdRotKey[a] (bit a of bdTrigValid). While bdTraValid: pieceSpaceTra is the compose of position bits
+	// bdPosKey, rotation bits bdRotKey and scale bits bdScaleKey with the S3DModelPiece bdOriginal (any other write
+	// of pieceSpaceTra clears it).
+	mutable uint32_t bdRotKey[3] = {0, 0, 0};
+	mutable uint32_t bdPosKey[3] = {0, 0, 0};
+	mutable uint32_t bdScaleKey = 0;
+	mutable float bdSin[3] = {0.0f, 0.0f, 0.0f};
+	mutable float bdCos[3] = {0.0f, 0.0f, 0.0f};
+	mutable const S3DModelPiece* bdOriginal = nullptr;
+	mutable uint8_t bdTrigValid = 0;
+	mutable bool bdTraValid = false;
+#endif
 };

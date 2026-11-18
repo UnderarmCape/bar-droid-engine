@@ -32,6 +32,15 @@ LOG_REGISTER_SECTION_GLOBAL(LOG_SECTION_TEXTURE)
 
 #define TEX_MAT_UID(pTxID, sTxID) ((std::uint64_t(pTxID) << 32u) | sTxID)
 
+#ifdef BARDROID_SIM
+#include "System/Config/ConfigHandler.h"
+// BAR Droid (engine branch; Kailil, 2026-11-04: on the 8 GB dev phone "cut anything visual ... textures" for 8v8): a
+// DDS model texture larger than this on a side is uploaded from its own smaller mipmap levels, nothing re-encoded. A
+// phone's GPU memory is its RAM: BAR's unit textures are 4096x4096 (DXT5 22 MB each with mipmaps, Legion's normal maps
+// uncompressed 87 MB). Rendering only; 0 (the default) uploads every file whole.
+CONFIG(int, BarDroidModelTextureMax).defaultValue(0).minimumValue(0).description("BAR Droid: a DDS model texture larger than this on a side (0: none) is uploaded from its own smaller mipmap levels: less GPU memory (a phone's RAM)");
+#endif
+
 
 // The S3O texture handler uses two textures.
 // The first contains diffuse color (RGB) and teamcolor (A)
@@ -172,6 +181,18 @@ unsigned int CS3OTextureHandler::LoadAndCacheTexture(
 			bitmap->InvertAlpha();
 	}
 
+	unsigned int skip = 0;
+#if defined(BARDROID_SIM) && !defined(HEADLESS)
+	// (BarDroidModelTextureMax: from that many levels down, its sizes too)
+	static const int maxSide = configHandler->GetInt("BarDroidModelTextureMax");
+	if (!preloadCall && maxSide > 0 && bitmap->compressed) {
+		while ((bitmap->xsize >> skip) > maxSide && (bitmap->ysize >> skip) > maxSide
+				&& skip < 4 && skip < bitmap->ddsimage.get_num_mipmaps()) {
+			skip++;
+		}
+		bitmap->ddsSkipLevels = static_cast<uint8_t>(skip);
+	}
+#endif
 	const unsigned int texID = preloadCall ? 0 : bitmap->CreateMipMapTexture();
 #ifndef HEADLESS
 	assert(preloadCall || texID > 0);
@@ -180,6 +201,8 @@ unsigned int CS3OTextureHandler::LoadAndCacheTexture(
 	if (textureIt != textureCache.end() && texID > 0) {
 		assert(!preloadCall);
 		textureIt->second.texID = texID;
+		textureIt->second.xsize = static_cast<uint32_t>(bitmap->xsize) >> skip; // (as uploaded: BarDroidModelTextureMax)
+		textureIt->second.ysize = static_cast<uint32_t>(bitmap->ysize) >> skip;
 	}
 	else {
 		//save main params from the preloadCall pass, such that data is stored correctly for Reload()

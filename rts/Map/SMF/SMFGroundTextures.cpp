@@ -45,6 +45,14 @@ LOG_REGISTER_SECTION_GLOBAL(LOG_SECTION_SMF_GROUND_TEXTURES)
 
 CONFIG(bool , SMFTextureStreaming).defaultValue(false).safemodeValue(true).description("Dynamically load and unload SMF Diffuse textures. Saves VRAM, worse performance and image quality.");
 CONFIG(float, SMFTextureLodBias).defaultValue(0.0f).safemodeValue(0.0f).description("In case SMFTextureStreaming = false, this parameter controls the sampling lod bias applied to diffuse texture");
+#ifdef BARDROID_SIM
+// BAR Droid (engine branch; Kailil, 2026-11-06: "reduce all other aspects of the game"): with SMFTextureStreaming the
+// map's ground tiles stay in RAM for the whole game (every 32x32 tile with its 4 DXT1 mip levels, 680 bytes; on a
+// phone that memory is swapped out and back). At 1 the finest level (512 of the 680 bytes) is left out: the ground at
+// half its resolution when the camera is close, the same from mid zoom out. Drawing only; the map's files and
+// checksum are untouched.
+CONFIG(int, BarDroidMapTileSkip).defaultValue(0).minimumValue(0).maximumValue(2).description("BAR Droid: with SMFTextureStreaming, the map ground tiles' finest mip levels left out of memory (1: half resolution up close, 75% less RAM)");
+#endif
 
 std::vector<CSMFGroundTextures::GroundSquare> CSMFGroundTextures::squares;
 
@@ -54,6 +62,9 @@ std::vector<char> CSMFGroundTextures::tiles;
 std::vector<float> CSMFGroundTextures::heightMaxima;
 std::vector<float> CSMFGroundTextures::heightMinima;
 std::vector<float> CSMFGroundTextures::stretchFactors;
+
+// where each mip level starts in a tile's 680 bytes
+static constexpr int TILE_MIP_OFFSET[] = {0, 512, 512+128, 512+128+32};
 
 
 
@@ -73,6 +84,9 @@ CSMFGroundTextures::CSMFGroundTextures(CSMFReadMap* rm): smfMap(rm)
 	RECOIL_DETAILED_TRACY_ZONE;
 	smfTextureStreaming = configHandler->GetBool("SMFTextureStreaming");
 	smfTextureLodBias = configHandler->GetFloat("SMFTextureLodBias");
+#if defined(BARDROID_SIM) && !defined(HEADLESS)
+	tileSkip = smfTextureStreaming ? configHandler->GetInt("BarDroidMapTileSkip") : 0;
+#endif
 
 	LoadTiles(smfMap->GetMapFile());
 	if (smfTextureStreaming) {
@@ -114,7 +128,10 @@ void CSMFGroundTextures::LoadTiles(CSMFMapFile& file)
 
 	tileMap.clear();
 	tileMap.resize(smfMap->tileCount);
-	tiles.assign(static_cast<size_t>(tileHeader.numTiles) * SMALL_TILE_SIZE, 0);
+	tileStride = SMALL_TILE_SIZE - TILE_MIP_OFFSET[tileSkip];
+	tiles.assign(static_cast<size_t>(tileHeader.numTiles) * tileStride, 0);
+	tiles.shrink_to_fit();
+	char tileRead[SMALL_TILE_SIZE];
 	squares.clear();
 	squares.resize(smfMap->numBigTexX * smfMap->numBigTexY);
 
@@ -154,7 +171,7 @@ void CSMFGroundTextures::LoadTiles(CSMFMapFile& file)
 				__func__, a, smtFilePath.c_str(), numSmallTiles
 			);
 
-			memset(&tiles[curTile * SMALL_TILE_SIZE], 0xaa, numSmallTiles * SMALL_TILE_SIZE);
+			memset(&tiles[curTile * tileStride], 0xaa, numSmallTiles * tileStride);
 			curTile += numSmallTiles;
 			continue;
 		}
@@ -171,9 +188,16 @@ void CSMFGroundTextures::LoadTiles(CSMFMapFile& file)
 		}
 
 		for (int b = 0; b < numSmallTiles; ++b) {
-			tileFile.Read(&tiles[(curTile++) * SMALL_TILE_SIZE], SMALL_TILE_SIZE);
+			if (tileSkip == 0) {
+				tileFile.Read(&tiles[(curTile++) * SMALL_TILE_SIZE], SMALL_TILE_SIZE);
+				continue;
+			}
+			tileFile.Read(&tileRead[0], SMALL_TILE_SIZE);
+			memcpy(&tiles[(curTile++) * tileStride], &tileRead[TILE_MIP_OFFSET[tileSkip]], tileStride);
 		}
 	}
+	LOG("[BarDroid] map tiles: %d, %.0f MB in memory%s", tileHeader.numTiles, tiles.size() / 1048576.0,
+		(tileSkip > 0) ? " (BarDroidMapTileSkip: the finest levels left out)" : "");
 
 	ifs->Read(&tileMap[0], smfMap->tileCount * sizeof(int));
 
@@ -424,6 +448,8 @@ void CSMFGroundTextures::DrawUpdate()
 			if (stretchFactors[y * smfMap->numBigTexX + x] > 16000 && wantedLevel > 0)
 				wantedLevel--;
 
+			wantedLevel = std::max(wantedLevel, tileSkip);
+
 			if (square->GetMipLevel() != wantedLevel) {
 				LoadSquareTexture(x, y, wantedLevel);
 			}
@@ -469,6 +495,8 @@ bool CSMFGroundTextures::GetSquareLuaTexture(int texSquareX, int texSquareY, int
 
 	if (lodMax > lodMin)
 		std::swap(lodMin, lodMax);
+	if (lodMax < tileSkip)   // (levels BarDroidMapTileSkip left out)
+		return false;
 
 	static constexpr GLenum ttarget = GL_TEXTURE_2D;
 	static constexpr GLbitfield access = GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT;
@@ -512,10 +540,10 @@ void CSMFGroundTextures::ExtractSquareTiles(
 	if (tileBuf == nullptr)
 		return;
 
-	constexpr int TILE_MIP_OFFSET[] = {0, 512, 512+128, 512+128+32};
 	constexpr int BLOCK_SIZE = 32;
 
-	const int mipOffset = TILE_MIP_OFFSET[mipLevel];
+	assert(mipLevel >= tileSkip);
+	const int mipOffset = TILE_MIP_OFFSET[mipLevel] - TILE_MIP_OFFSET[tileSkip];
 	const int numBlocks = SQUARE_SIZE >> mipLevel;
 	const int tileOffsetX = texSquareX * BLOCK_SIZE;
 	const int tileOffsetY = texSquareY * BLOCK_SIZE;
@@ -528,7 +556,7 @@ void CSMFGroundTextures::ExtractSquareTiles(
 			const int tileX = tileOffsetX + x1;
 			const int tileY = tileOffsetY + y1;
 			const int tileIdx = tileMap[tileY * smfMap->tileMapSizeX + tileX];
-			const GLint* tile = (GLint*) &tiles[tileIdx * SMALL_TILE_SIZE + mipOffset];
+			const GLint* tile = (GLint*) &tiles[tileIdx * tileStride + mipOffset];
 
 			const int doff = (x1 * numBlocks) + (y1 * numBlocks * numBlocks) * BLOCK_SIZE;
 
@@ -549,6 +577,7 @@ void CSMFGroundTextures::LoadSquareTexture(int x, int y, int level)
 	static constexpr GLenum ttarget = GL_TEXTURE_2D;
 	static constexpr GLbitfield access = GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT;
 
+	level = std::max(level, tileSkip);
 	const int mipSqSize = smfMap->bigTexSize >> level;
 	const int numSqBytes = (mipSqSize * mipSqSize) / 2;
 

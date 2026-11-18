@@ -54,8 +54,19 @@ void LocalModel::SetModel(const S3DModel* model, bool initialize)
 	assert(model != nullptr);
 	assert(model->numPieces >= 1);
 
+#ifdef BARDROID_SIM
+	// (BarDroidAnimDirtyRange: new or reloaded pieces; any of them may be dirty)
+	barDroidDirtyLo = 0;
+	barDroidDirtyHi = INT32_MAX - 1;
+#endif
+
 	if (!initialize) {
 		assert(pieces.size() == model->numPieces);
+
+#ifdef BARDROID_SIM
+		// (a loaded game's tree may have been changed by Spring.SetUnitPieceParent before it was saved)
+		barDroidPreOrder = false;
+#endif
 
 		// PostLoad; only update the pieces
 		for (size_t n = 0; n < pieces.size(); n++) {
@@ -75,6 +86,9 @@ void LocalModel::SetModel(const S3DModel* model, bool initialize)
 	pieces.reserve(model->numPieces);
 
 	CreateLocalModelPieces(model->GetRootPiece());
+#ifdef BARDROID_SIM
+	barDroidPreOrder = true;
+#endif
 
 	// must recursively update matrices here too: for features
 	// LocalModel::Update is never called, but they might have
@@ -112,6 +126,10 @@ LocalModelPiece* LocalModel::CreateLocalModelPieces(const S3DModelPiece* mpParen
 		lmpChild->SetParent(lmpParent);
 		lmpParent->AddChild(lmpChild);
 	}
+#ifdef BARDROID_SIM
+	// (BarDroidAnimDirtyRange: pre-order, so the subtree made above ends at the last piece added)
+	lmpParent->BarDroidSetLastDescendant(pieces.size() - 1);
+#endif
 
 	return lmpParent;
 }

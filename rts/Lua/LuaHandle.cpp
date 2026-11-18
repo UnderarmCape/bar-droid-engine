@@ -28,6 +28,7 @@
 #include "Game/UI/KeySet.h"
 #include "Game/UI/MiniMap.h"
 #include "Rendering/GlobalRendering.h"
+#include "Rendering/BarDroidGpuTimer.h"
 #include "Rml/Backends/RmlUi_Backend.h"
 #include "Sim/Misc/GlobalSynced.h"
 #include "Sim/Misc/TeamHandler.h"
@@ -69,11 +70,26 @@
 #include <tracy/TracyLua.hpp>
 
 #include <algorithm>
+#include <deque>
+#include <map>
+#include <optional>
 #include <string>
 
 
 CONFIG(float, LuaGarbageCollectionMemLoadMult).defaultValue(1.33f).minimumValue(1.0f).maximumValue(100.0f).description("How much the amount of Lua memory in use increases the rate of garbage collection.");
 CONFIG(float, LuaGarbageCollectionRunTimeMult).defaultValue(5.0f).minimumValue(1.0f).description("How many milliseconds the garbage collected can run for in each GC cycle");
+
+#ifdef BARDROID_SIM
+// BAR Droid (engine branch): the Lua VM's fast paths (LuaUser.h, barDroidLua); each gives the results stock gives, 0 = stock
+CONFIG(int, BarDroidLuaVM).defaultValue(1).minimumValue(0).maximumValue(1).description("BAR Droid: Lua's interpreter loop with computed-goto dispatch (needed by the four switches after it); 0: stock luaV_execute");
+CONFIG(int, BarDroidLuaFastTable).defaultValue(1).minimumValue(0).maximumValue(1).description("BAR Droid: table reads and writes inside the VM without the luaV_gettable/luaH_get calls (same lookups); 0: stock");
+CONFIG(int, BarDroidLuaFastCall).defaultValue(1).minimumValue(0).maximumValue(1).description("BAR Droid: calls and returns set up inside the VM (no luaD_precall/luaD_poscall calls) when no growth or hook is involved; 0: stock");
+CONFIG(int, BarDroidLuaFastCompare).defaultValue(1).minimumValue(0).maximumValue(1).description("BAR Droid: ==, <, <= of two numbers (== of strings, booleans, nil) inside the VM; 0: stock");
+CONFIG(int, BarDroidLuaPrefetch).defaultValue(1).minimumValue(0).maximumValue(1).description("BAR Droid: cache prefetches of a called Lua function's code, constants and upvalues and of function values (no other effect); 0: none");
+CONFIG(int, BarDroidLuaStrHash).defaultValue(1).minimumValue(0).maximumValue(1).description("BAR Droid: string interning compares the stored hash before length and bytes; 0: stock");
+CONFIG(int, BarDroidLuaAllocRelaxed).defaultValue(1).minimumValue(0).maximumValue(1).description("BAR Droid: the Lua allocator's byte and call counters with one relaxed atomic add each (same values); 0: stock");
+CONFIG(int, BarDroidLuaFastIter).defaultValue(1).minimumValue(0).maximumValue(1).description("BAR Droid: a generic for's call of a C iterator (next, ipairs) set up inside the VM (needs BarDroidLuaVM); 0: stock luaD_call");
+#endif
 
 
 static spring::unsynced_set<const luaContextData*>    SYNCED_LUAHANDLE_CONTEXTS;
@@ -142,6 +158,97 @@ static int handlepanic(lua_State* L)
 	throw content_error(luaL_optsstring(L, 1, "lua paniced"));
 }
 
+#if defined(BARDROID_SIM) && !defined(TRACY_ENABLE)
+// BAR Droid (engine branch): BAR's widget and gadget handlers mark each one's call with a Tracy zone
+// (tracy.ZoneBeginN("W:Update:<widget name>") ... tracy.ZoneEnd()), which are no-ops without Tracy. While the engine's
+// profiler is on ("/debug 1 0"; drawDebug goes with it) they become its timers: the time of every widget and gadget
+// per call-in, from the game's own marks. Lua runs on the main thread only, so one stack serves every handle.
+namespace {
+	// gpu: a GPU timer runs for this mark (a widget's or gadget's drawing call-in: "W:DrawWorld:<name>", BarDroidGpuTimer.h)
+	struct BarDroidZone { unsigned hash; spring_time start; bool gpu = false; };
+	std::vector<BarDroidZone> barDroidZones;
+	spring::unordered_map<std::string, unsigned> barDroidZoneHashes;
+	std::deque<std::string> barDroidZoneNames; // (the profiler keeps the names)
+
+	int BarDroidZoneBeginN(lua_State* L)
+	{
+		if (barDroidZones.size() > 256)
+			barDroidZones.clear(); // (an error between a begin and its end: start over)
+
+		size_t len = 0;
+		const char* name = globalRendering->drawDebug ? lua_tolstring(L, 1, &len) : nullptr;
+
+		if (name == nullptr) {
+			barDroidZones.push_back({0, spring_notime});
+			return 0;
+		}
+
+		std::string key(name, len);
+		auto it = barDroidZoneHashes.find(key);
+
+		if (it == barDroidZoneHashes.end()) {
+			barDroidZoneNames.emplace_back(std::move(key));
+			CTimeProfiler::RegisterTimer(barDroidZoneNames.back().c_str());
+			it = barDroidZoneHashes.emplace(barDroidZoneNames.back(), hashString(barDroidZoneNames.back().c_str())).first;
+		}
+
+		// (the GPU's time of a drawing call-in, one widget or gadget: "W:DrawWorld:<name>", two colons; the handler's own
+		// mark round all of them, "W:DrawWorld", gets none)
+		const std::string& mark = it->first;
+		const size_t c1 = mark.find(':');
+		const bool drawing = c1 != std::string::npos && mark.compare(c1 + 1, 4, "Draw") == 0
+			&& mark.find(':', c1 + 1) != std::string::npos;
+		const bool gpu = drawing && BarDroidGpuTimer::BeginNamed(mark);
+
+		barDroidZones.push_back({it->second, spring_gettime(), gpu});
+		return 0;
+	}
+
+	int BarDroidZoneEnd(lua_State* L)
+	{
+		if (barDroidZones.empty())
+			return 0;
+
+		const BarDroidZone zone = barDroidZones.back();
+		barDroidZones.pop_back();
+
+		if (zone.gpu)
+			BarDroidGpuTimer::EndNamed();
+		if (zone.hash != 0 && globalRendering->drawDebug)
+			CTimeProfiler::GetInstance().AddTime(zone.hash, zone.start, spring_gettime() - zone.start, false, false, false);
+
+		return 0;
+	}
+
+	// (an unnamed zone: a mark that times nothing, so every ZoneEnd still closes its own begin)
+	int BarDroidZoneBegin(lua_State* L)
+	{
+		barDroidZones.push_back({0, spring_notime});
+		return 0;
+	}
+
+	void BarDroidRegisterZoneTimers(lua_State* L)
+	{
+		lua_getglobal(L, "tracy");
+		if (!lua_istable(L, -1)) {
+			lua_pop(L, 1);
+			return;
+		}
+		lua_pushcfunction(L, BarDroidZoneBegin);
+		lua_setfield(L, -2, "ZoneBegin");
+		lua_pushcfunction(L, BarDroidZoneBegin);
+		lua_setfield(L, -2, "ZoneBeginS");
+		lua_pushcfunction(L, BarDroidZoneBeginN);
+		lua_setfield(L, -2, "ZoneBeginNS");
+		lua_pushcfunction(L, BarDroidZoneBeginN);
+		lua_setfield(L, -2, "ZoneBeginN");
+		lua_pushcfunction(L, BarDroidZoneEnd);
+		lua_setfield(L, -2, "ZoneEnd");
+		lua_pop(L, 1);
+	}
+}
+#endif
+
 
 
 CLuaHandle::CLuaHandle(const string& _name, int _order, bool _userMode, bool _synced)
@@ -177,6 +284,9 @@ CLuaHandle::CLuaHandle(const string& _name, int _order, bool _userMode, bool _sy
 
 	// register tracy functions in global scope
 	tracy::LuaRegister(L);
+	#if defined(BARDROID_SIM) && !defined(TRACY_ENABLE)
+		BarDroidRegisterZoneTimers(L);
+	#endif
 	#ifdef TRACY_ENABLE
 		lua_getglobal(L, "tracy");
 		LuaTracyExtra::PushEntries(L);
@@ -484,6 +594,23 @@ int CLuaHandle::RunCallInTraceback(
 		int error;
 	};
 
+#ifdef BARDROID_SIM
+	// BAR Droid (engine branch): while the engine's profiler is on ("/debug 1 0"; drawDebug goes with it) a timer for
+	// each handle and call-in, "Lua::<handle>[::synced]::<call-in>": which call-ins a big game's Lua time goes to (the
+	// handler runs every widget or gadget of a call-in inside it). Lua runs on the main thread only.
+	std::optional<ScopedTimer> callinTimer;
+	if (hs != nullptr && globalRendering->drawDebug) {
+		static std::map<std::pair<const CLuaHandle*, const LuaHashString*>, unsigned> callinHashes;
+		static std::deque<std::string> callinNames; // (the profiler keeps the names)
+		auto it = callinHashes.find({this, hs});
+		if (it == callinHashes.end()) {
+			callinNames.emplace_back("Lua::" + GetName() + (GetHandleSynced(L) ? "::synced::" : "::") + hs->GetString());
+			CTimeProfiler::RegisterTimer(callinNames.back().c_str());
+			it = callinHashes.emplace(std::make_pair(this, hs), hashString(callinNames.back().c_str())).first;
+		}
+		callinTimer.emplace(it->second);
+	}
+#endif
 	// TODO: use closure so we do not need to copy args
 	ScopedLuaCall call(this, L, (hs != nullptr)? hs->GetString(): "LUS::?", inArgs, outArgs, errFuncIndex, popErrorFunc);
 	call.CheckFixStack(*ts);
@@ -2557,6 +2684,9 @@ void CLuaHandle::UnsyncedHeightMapUpdate(const SRectangle& rect)
 void CLuaHandle::Update()
 {
 	RECOIL_DETAILED_TRACY_ZONE;
+#ifdef BARDROID_SIM
+	BarDroidLuaReadConfig(false); // (once a drawn frame, by the first handle)
+#endif
 	LUA_CALL_IN_CHECK(L);
 	luaL_checkstack(L, 2, __func__);
 	static const LuaHashString cmdStr(__func__);
@@ -4767,3 +4897,41 @@ void CLuaHandle::Cob2LuaBatch(const LuaHashString& name, std::vector<CCobDeferre
 
 /******************************************************************************/
 /******************************************************************************/
+
+#ifdef BARDROID_SIM
+#include "Game/BarDroidSimGuard.h"
+
+// The Lua VM's switches (LuaUser.h) from the engine's config.
+// force: at a Lua state's creation (LUA_OPEN: handles and parsers, the loading's Lua too); else once a drawn frame
+void BarDroidLuaReadConfig(bool force)
+{
+	static unsigned int lastDrawFrame = ~0u;
+
+	if (configHandler == nullptr)
+		return;
+
+	if (!force) {
+		if (globalRendering == nullptr || globalRendering->drawFrame == lastDrawFrame)
+			return;
+
+		lastDrawFrame = globalRendering->drawFrame;
+	}
+
+	// off online, every switch 0 (Game/BarDroidSimGuard.h)
+	if (!BarDroidSimAllowed()) {
+		barDroidLua = BarDroidLuaSwitches{0, 0, 0, 0, 0, 0, 0, 0};
+		return;
+	}
+
+	BarDroidLuaSwitches s;
+	s.vm           = configHandler->GetInt("BarDroidLuaVM");
+	s.fastTable    = configHandler->GetInt("BarDroidLuaFastTable");
+	s.fastCall     = configHandler->GetInt("BarDroidLuaFastCall");
+	s.fastCompare  = configHandler->GetInt("BarDroidLuaFastCompare");
+	s.prefetch     = configHandler->GetInt("BarDroidLuaPrefetch");
+	s.strHash      = configHandler->GetInt("BarDroidLuaStrHash");
+	s.allocRelaxed = configHandler->GetInt("BarDroidLuaAllocRelaxed");
+	s.fastIter     = configHandler->GetInt("BarDroidLuaFastIter");
+	barDroidLua = s;
+}
+#endif

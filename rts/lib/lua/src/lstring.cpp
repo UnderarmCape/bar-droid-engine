@@ -89,12 +89,26 @@ LUA_API lua_Hash lua_calchash(const char *str, size_t l) {
   return calchash(str, l);
 }
 
+#ifdef BARDROID_SIM
+__attribute__((hot))  /* (the changed code no longer matches its PGO profile: kept with the hot code, as it was) */
+#endif
 TString *luaS_newhstr (lua_State *L, lua_Hash h, const char *str, size_t l) {
   GCObject *o;
+#ifdef BARDROID_SIM
+  /* BAR Droid: BarDroidLuaStrHash, each chained string's stored hash compared before its length and bytes. Every
+     interned string's hash is calchash of its bytes (newlstr stores what its caller passed: calchash in luaS_newlstr,
+     lua_calchash or CompileTimeHash, the same function, from the engine's lua_pushhstring callers; creg's
+     SerializeLuaState recomputes it with lua_calchash), so a string whose hash differs cannot be equal: the same
+     string is found, or none and the same new one is made */
+  const int strHash = barDroidLua.strHash;
+#endif
   for (o = G(L)->strt.hash[lmod(h, G(L)->strt.size)];
        o != NULL;
        o = o->gch.next) {
     TString *ts = rawgco2ts(o);
+#ifdef BARDROID_SIM
+    if (strHash && ts->tsv.hash != h) continue;
+#endif
     if (ts->tsv.len == l && (memcmp(str, getstr(ts), l) == 0)) {
       /* string may be dead */
       if (isdead(G(L), o)) changewhite(o);
@@ -106,13 +120,22 @@ TString *luaS_newhstr (lua_State *L, lua_Hash h, const char *str, size_t l) {
 
 
 //SPRING
+#ifdef BARDROID_SIM
+__attribute__((hot))  /* (as luaS_newhstr) */
+#endif
 TString *luaS_newlstr (lua_State *L, const char *str, size_t l) {
   GCObject *o;
   const lua_Hash h = calchash(str, l);
+#ifdef BARDROID_SIM
+  const int strHash = barDroidLua.strHash;  /* (BarDroidLuaStrHash: as in luaS_newhstr) */
+#endif
   for (o = G(L)->strt.hash[lmod(h, G(L)->strt.size)];
        o != NULL;
        o = o->gch.next) {
     TString *ts = rawgco2ts(o);
+#ifdef BARDROID_SIM
+    if (strHash && ts->tsv.hash != h) continue;
+#endif
     if (ts->tsv.len == l && (memcmp(str, getstr(ts), l) == 0)) {
       /* string may be dead */
       if (isdead(G(L), o)) changewhite(o);

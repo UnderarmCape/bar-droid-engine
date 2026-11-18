@@ -33,6 +33,7 @@
 #include "ExternalAI/EngineOutHandler.h"
 #include "ExternalAI/SkirmishAIHandler.h"
 #include "Rendering/WorldDrawer.h"
+#include "Rendering/BarDroidGpuTimer.h"
 #include "Rendering/Env/IWater.h"
 #include "Rendering/Env/WaterRendering.h"
 #include "Rendering/Env/MapRendering.h"
@@ -152,6 +153,45 @@ CONFIG(float, GuiOpacity).defaultValue(0.8f).minimumValue(0.0f).maximumValue(1.0
 CONFIG(std::string, InputTextGeo).defaultValue("");
 
 CONFIG(int, SmoothTimeOffset).defaultValue(0).headlessValue(0).description("Enables frametimeoffset smoothing, 0 = off (old version), -1 = forced 0.5,  1-20 smooth, recommended = 2-3");
+
+#ifdef BARDROID_SIM
+#include "Game/BarDroidSimGuard.h"
+#include "Game/PreGame.h"
+#include <atomic>
+
+CONFIG(bool, BarDroidSimOnline).defaultValue(false).description("BAR Droid: the simulation rewrite's switches as set in online games too (tests); 0: off online (stock code), as set in skirmishes and replays");
+
+bool BarDroidSimAllowed()
+{
+	// (main thread, and the loading thread as it creates Lua states; gameSetup does not change during a game, and is
+	// never null: a blank setup until one is loaded)
+	bool allowed = true;
+	const char* why = "no game";
+
+	if (configHandler != nullptr && configHandler->GetBool("BarDroidSimOnline")) {
+		why = "BarDroidSimOnline = 1";
+	} else if (game == nullptr && pregame == nullptr) {
+		// the menu (a game's PreGame comes first; CGame exists before its loading makes the game's Lua states)
+	} else if (!CGameSetup::ScriptLoaded()) {
+		allowed = false; why = "a game starting, its setup not received yet";
+	} else if (gameSetup->hostDemo) {
+		why = "a replay";
+	} else if (gameServer == nullptr) {
+		allowed = false; why = "online: a remote host";
+	} else if (gameSetup->GetPlayerStartingDataCont().size() > 1) {
+		allowed = false; why = "online: other players on this host";
+	} else {
+		why = "a game hosted here for one player";
+	}
+
+	// (logged when the reason changes)
+	static std::atomic<const char*> logged = {nullptr};
+	if (logged.exchange(why, std::memory_order_relaxed) != why)
+		LOG("[BarDroidSim] the simulation rewrite %s (%s)", allowed ? "as set" : "off, stock code", why);
+
+	return allowed;
+}
+#endif
 
 CGame* game = nullptr;
 
@@ -1511,12 +1551,18 @@ bool CGame::Draw() {
 	//FIXME move both to UpdateUnsynced?
 	CTeamHighlight::Enable(spring_tomsecs(currentTimePreDraw));
 	{
-		minimap->Update();
+		{
+			BARDROID_GPU_TIMER("MinimapUpdate");
+			minimap->Update();
+		}
 
 		// note: neither this call nor DrawWorld can be made conditional on minimap->GetMaximized()
 		// minimap never covers entire screen when maximized unless map aspect-ratio matches screen
 		// (unlikely);
-		worldDrawer.GenerateIBLTextures();
+		{
+			BARDROID_GPU_TIMER("IBLTextures");
+			worldDrawer.GenerateIBLTextures();
+		}
 
 		// restore back to the default FBO / Viewport
 		if (FBO::IsSupported())
@@ -1530,21 +1576,27 @@ bool CGame::Draw() {
 	{
 		SCOPED_TIMER("Draw::Screen");
 		SCOPED_GL_DEBUGGROUP("Draw::Screen");
-		if (CUnitDrawer::UseScreenIcons())
+		if (CUnitDrawer::UseScreenIcons()) {
+			BARDROID_GPU_TIMER("ScreenIcons");
 			unitDrawer->DrawUnitIconsScreen();
+		}
 
-		eventHandler.DrawScreenEffects();
+		{
+			eventHandler.DrawScreenEffects();
+		}
 
-		hudDrawer->Draw((gu->GetMyPlayer())->fpsController.GetControllee());
-		debugDrawerAI->Draw();
+		{
+			hudDrawer->Draw((gu->GetMyPlayer())->fpsController.GetControllee());
+			debugDrawerAI->Draw();
 
-		DrawInputReceivers();
-		DrawInputText();
-		DrawInterfaceWidgets();
-		RmlGui::RenderFrame();
-		mouse->DrawCursor();
+			DrawInputReceivers();
+			DrawInputText();
+			DrawInterfaceWidgets();
+			RmlGui::RenderFrame();
+			mouse->DrawCursor();
 
-		eventHandler.DrawScreenPost();
+			eventHandler.DrawScreenPost();
+		}
 	}
 
 	glEnable(GL_DEPTH_TEST);

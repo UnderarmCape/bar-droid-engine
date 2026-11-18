@@ -28,6 +28,10 @@ struct S3DModelPiece {
 		vertices.clear();
 		indices.clear();
 		shatterIndices.clear();
+		barDroidLodIndices.clear();
+		barDroidBarVerts.clear();
+		barDroidBarIndices.clear();
+		barDroidBarVertIndex = ~0u;
 
 		parent = nullptr;
 		colvol = {};
@@ -74,6 +78,11 @@ public:
 	}
 
 	Transform ComposeTransform(const float3& t, const float3& r, float s) const;
+#ifdef BARDROID_SIM
+	// BAR Droid (BarDroidPieceTrigCache): ComposeTransform(t, r, s) with FromEulerYPRNeg(-r)'s half-angle sines and
+	// cosines given (halfSin[a] = math::sin(r[a] * 0.5f), halfCos[a] = math::cos(r[a] * 0.5f)): the same operations
+	Transform BarDroidComposeTransform(const float3& t, const float* halfSin, const float* halfCos, float s) const;
+#endif
 
 	void SetCollisionVolume(const CollisionVolume& cv) { colvol = cv; }
 	const CollisionVolume* GetCollisionVolume() const { return &colvol; }
@@ -121,6 +130,15 @@ public:
 	uint32_t vertIndex = ~0u; // global vertex number offset
 	uint32_t indxStart = ~0u; // global Index VBO offset
 	uint32_t indxCount = ~0u;
+
+	// BAR Droid (engine branch, BarDroidModelLodShare): a much coarser index list over the same vertices, for the model
+	// drawn small on the screen (empty: the piece's own list)
+	std::vector<uint32_t> barDroidLodIndices;
+	// (BarDroidModelOverrideAB, a measurement: a mobile model's piece keeps BAR's own vertices and triangles too, uploaded
+	// after the model's own; barDroidBarVertIndex: where they start in the buffer)
+	std::vector<SVertexData> barDroidBarVerts;
+	std::vector<uint32_t> barDroidBarIndices;
+	uint32_t barDroidBarVertIndex = ~0u;
 protected:
 	std::vector<SVertexData> vertices;
 	std::vector<uint32_t> indices;

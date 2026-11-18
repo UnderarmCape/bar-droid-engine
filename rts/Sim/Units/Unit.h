@@ -162,6 +162,16 @@ public:
 	bool CanUpdateWeapons() const {
 		return (forceUseWeapons || (allowUseWeapons && !onTempHoldFire && !isDead && !beingBuilt && !IsStunned()));
 	}
+#ifdef BARDROID_SIM
+	// BAR Droid (BarDroidWeaponPrefetch): prefetch hints for CUnitHandler's weapon loops, one stage each, a few units
+	// ahead: this unit's weapon list and flags; the weapon pointers and the script's piece table; the weapons'
+	// objects and piece pointers; the pieces each weapon aims and fires from. Each stage reads only what the one
+	// before brought in. Hints only: nothing is written (Unit.cpp).
+	void BarDroidPrefetchWeaponsUnit() const;
+	void BarDroidPrefetchWeaponsList() const;
+	void BarDroidPrefetchWeaponsObjects() const;
+	void BarDroidPrefetchWeaponsPieces() const;
+#endif
 
 	void SetNeutral(bool b);
 	void SetStunned(bool stun);

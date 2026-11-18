@@ -234,7 +234,95 @@ void CCobThread::InitStack(unsigned int n, CCobThread* t)
 #define GET_LONG_PC() (cobFile->code.at(pc++))
 #endif
 
+#ifdef BARDROID_SIM
+// BAR Droid (BarDroidCobDispatch): the opcodes are sparse 32-bit values (0x100KK00L), so the switch over them compiled
+// to a search; here each one also has a dense index, 1..64 (its place in COB_OPS + 1), found through a 2048-entry table
+// by the opcode's KK and L bits, and the same switch runs over that (one jump table). The mapping is exact: an opcode
+// gets index i only if its other bits are those of every opcode (0x100 on top, nine zeros in the middle), and KK and L
+// then give back exactly COB_OPS[i - 1]; anything else gets 0, which no case has (default, as before).
+namespace {
+	constexpr int COB_OPS[] = {
+		MOVE, TURN, SPIN, STOP_SPIN, SHOW, HIDE, CACHE, DONT_CACHE, MOVE_NOW, TURN_NOW, SHADE, DONT_SHADE, EMIT_SFX,
+		SCALE, SCALE_NOW, WAIT_TURN, WAIT_MOVE, WAIT_SCALE, SLEEP,
+		PUSH_CONSTANT, PUSH_LOCAL_VAR, PUSH_STATIC, CREATE_LOCAL_VAR, POP_LOCAL_VAR, POP_STATIC, POP_STACK,
+		ADD, SUB, MUL, DIV, MOD, BITWISE_AND, BITWISE_OR, BITWISE_XOR, BITWISE_NOT,
+		RAND, GET_UNIT_VALUE, GET,
+		SET_LESS, SET_LESS_OR_EQUAL, SET_GREATER, SET_GREATER_OR_EQUAL, SET_EQUAL, SET_NOT_EQUAL,
+		LOGICAL_AND, LOGICAL_OR, LOGICAL_XOR, LOGICAL_NOT,
+		START, CALL, REAL_CALL, LUA_CALL, BATCH_LUA, JUMP, RETURN, JUMP_NOT_EQUAL, SIGNAL, SET_SIGNAL_MASK,
+		EXPLODE, PLAY_SOUND, SET, ATTACH, DROP, SIGNATURE_LUA,
+	};
+	constexpr size_t NUM_COB_OPS = sizeof(COB_OPS) / sizeof(COB_OPS[0]);
+
+	// the bits every opcode has (0x100 in 31..20, zeros in 11..3), and the key from the rest (19..12 and 2..0)
+	constexpr bool CobKeyed(uint32_t op) { return ((op & 0xFFF00FF8u) == 0x10000000u); }
+	constexpr uint32_t CobKey(uint32_t op) { return (((op >> 12) & 0xFFu) << 3) | (op & 7u); }
+
+	constexpr std::array<uint8_t, 2048> MakeCobDenseTable() {
+		std::array<uint8_t, 2048> table = {};
+		for (size_t i = 0; i < NUM_COB_OPS; ++i)
+			table[CobKey(uint32_t(COB_OPS[i]))] = uint8_t(i + 1);
+		return table;
+	}
+	constexpr std::array<uint8_t, 2048> COB_DENSE = MakeCobDenseTable();
+
+	constexpr bool CobDenseTableExact() {
+		size_t used = 0;
+		for (size_t i = 0; i < NUM_COB_OPS; ++i) {
+			if (!CobKeyed(uint32_t(COB_OPS[i])))
+				return false;
+			if (COB_DENSE[CobKey(uint32_t(COB_OPS[i]))] != i + 1)
+				return false;
+		}
+		for (const uint8_t v: COB_DENSE)
+			used += (v != 0);
+		return (used == NUM_COB_OPS);
+	}
+	static_assert(NUM_COB_OPS < 256, "");
+	static_assert(CobDenseTableExact(), "every opcode keyed, each key its own");
+
+	// a case label: the opcode itself, or its dense index (an opcode missing from COB_OPS fails to compile)
+	template<bool Dense> constexpr int CobCase(int op) {
+		if constexpr (!Dense) {
+			return op;
+		} else {
+			for (size_t i = 0; i < NUM_COB_OPS; ++i) {
+				if (COB_OPS[i] == op)
+					return int(i + 1);
+			}
+			throw "opcode missing from COB_OPS";
+		}
+	}
+	// the value switched on: the opcode itself, or its dense index (0: none of them)
+	template<bool Dense> inline int CobSel(int op) {
+		if constexpr (!Dense) {
+			return op;
+		} else {
+			const uint32_t u = uint32_t(op);
+			return CobKeyed(u) ? int(COB_DENSE[CobKey(u)]) : 0;
+		}
+	}
+}
+
+#define COB_CASE(op) CobCase<BarDroidDense>(op)
+#define COB_SWITCH_ON(op) CobSel<BarDroidDense>(op)
+
 bool CCobThread::Tick()
+{
+	if (BarDroidUnits::cobDispatch)
+		return TickImpl<true>();
+
+	return TickImpl<false>();
+}
+
+template<bool BarDroidDense>
+bool CCobThread::TickImpl()
+#else
+#define COB_CASE(op) op
+#define COB_SWITCH_ON(op) op
+
+bool CCobThread::Tick()
+#endif
 {
 	assert(state != Sleep);
 	assert(cobInst != nullptr);
@@ -251,12 +339,12 @@ bool CCobThread::Tick()
 	while (state == Run) {
 		const int opcode = GET_LONG_PC();
 
-		switch (opcode) {
-			case PUSH_CONSTANT: {
+		switch (COB_SWITCH_ON(opcode)) {
+			case COB_CASE(PUSH_CONSTANT): {
 				r1 = GET_LONG_PC();
 				PushDataStack(r1);
 			} break;
-			case SLEEP: {
+			case COB_CASE(SLEEP): {
 				r1 = PopDataStack();
 				wakeTime = cobEngine->GetCurrTime() + r1;
 				state = Sleep;
@@ -264,21 +352,21 @@ bool CCobThread::Tick()
 				cobEngine->ScheduleThread(this);
 				return true;
 			} break;
-			case SPIN: {
+			case COB_CASE(SPIN): {
 				r1 = GET_LONG_PC();
 				r2 = GET_LONG_PC();
 				r3 = PopDataStack();         // speed
 				r4 = PopDataStack();         // accel
 				cobInst->Spin(r1, r2, r3, r4);
 			} break;
-			case STOP_SPIN: {
+			case COB_CASE(STOP_SPIN): {
 				r1 = GET_LONG_PC();
 				r2 = GET_LONG_PC();
 				r3 = PopDataStack();         // decel
 
 				cobInst->StopSpin(r1, r2, r3);
 			} break;
-			case RETURN: {
+			case COB_CASE(RETURN): {
 				retCode = PopDataStack();
 
 				if (LocalReturnAddr() == -1) {
@@ -298,30 +386,30 @@ bool CCobThread::Tick()
 			} break;
 
 
-			case SHADE: {
+			case COB_CASE(SHADE): {
 				r1 = GET_LONG_PC();
 			} break;
-			case DONT_SHADE: {
+			case COB_CASE(DONT_SHADE): {
 				r1 = GET_LONG_PC();
 			} break;
-			case CACHE: {
+			case COB_CASE(CACHE): {
 				r1 = GET_LONG_PC();
 			} break;
-			case DONT_CACHE: {
+			case COB_CASE(DONT_CACHE): {
 				r1 = GET_LONG_PC();
 			} break;
 
-			case SIGNATURE_LUA: {
+			case COB_CASE(SIGNATURE_LUA): {
 				LOG_L(L_ERROR, "BAD ACCESS: Entered a lua method reference.");
 				state = Dead;
 				return false;
 			} break;
 
-			case BATCH_LUA: {
+			case COB_CASE(BATCH_LUA): {
 				DeferredCall(false);
 			} break;
 
-			case CALL: {
+			case COB_CASE(CALL): {
 				r1 = GET_LONG_PC();
 				pc--;
 
@@ -334,7 +422,7 @@ bool CCobThread::Tick()
 				cobFile->code[pc - 1] = REAL_CALL;
 
 			} [[fallthrough]];
-			case REAL_CALL: {
+			case COB_CASE(REAL_CALL): {
 				r1 = GET_LONG_PC();
 				r2 = GET_LONG_PC();
 
@@ -352,24 +440,24 @@ bool CCobThread::Tick()
 				// call cobFile->scriptNames[r1]
 				pc = cobFile->scriptOffsets[r1];
 			} break;
-			case LUA_CALL: {
+			case COB_CASE(LUA_CALL): {
 				LuaCall();
 			} break;
 
 
-			case POP_STATIC: {
+			case COB_CASE(POP_STATIC): {
 				r1 = GET_LONG_PC();
 				r2 = PopDataStack();
 
 				if (static_cast<size_t>(r1) < cobInst->staticVars.size())
 					cobInst->staticVars[r1] = r2;
 			} break;
-			case POP_STACK: {
+			case COB_CASE(POP_STACK): {
 				PopDataStack();
 			} break;
 
 
-			case START: {
+			case COB_CASE(START): {
 				r1 = GET_LONG_PC();
 				r2 = GET_LONG_PC();
 
@@ -387,14 +475,14 @@ bool CCobThread::Tick()
 				cobEngine->QueueAddThread(std::move(t));
 			} break;
 
-			case CREATE_LOCAL_VAR: {
+			case COB_CASE(CREATE_LOCAL_VAR): {
 				if (paramCount == 0) {
 					PushDataStack(0);
 				} else {
 					paramCount--;
 				}
 			} break;
-			case GET_UNIT_VALUE: {
+			case COB_CASE(GET_UNIT_VALUE): {
 				r1 = PopDataStack();
 				if ((r1 >= LUA0) && (r1 <= LUA9)) {
 					PushDataStack(luaArgs[r1 - LUA0]);
@@ -405,7 +493,7 @@ bool CCobThread::Tick()
 			} break;
 
 
-			case JUMP_NOT_EQUAL: {
+			case COB_CASE(JUMP_NOT_EQUAL): {
 				r1 = GET_LONG_PC();
 				r2 = PopDataStack();
 
@@ -413,7 +501,7 @@ bool CCobThread::Tick()
 					pc = r1;
 
 			} break;
-			case JUMP: {
+			case COB_CASE(JUMP): {
 				r1 = GET_LONG_PC();
 				// this seem to be an error in the docs..
 				//r2 = cobFile->scriptOffsets[LocalFunctionID()] + r1;
@@ -421,125 +509,125 @@ bool CCobThread::Tick()
 			} break;
 
 
-			case POP_LOCAL_VAR: {
+			case COB_CASE(POP_LOCAL_VAR): {
 				r1 = GET_LONG_PC();
 				r2 = PopDataStack();
 				dataStack[LocalStackFrame() + r1] = r2;
 			} break;
-			case PUSH_LOCAL_VAR: {
+			case COB_CASE(PUSH_LOCAL_VAR): {
 				r1 = GET_LONG_PC();
 				r2 = dataStack[LocalStackFrame() + r1];
 				PushDataStack(r2);
 			} break;
 
 
-			case BITWISE_AND: {
+			case COB_CASE(BITWISE_AND): {
 				r1 = PopDataStack();
 				r2 = PopDataStack();
 				PushDataStack(r1 & r2);
 			} break;
-			case BITWISE_OR: {
+			case COB_CASE(BITWISE_OR): {
 				r1 = PopDataStack();
 				r2 = PopDataStack();
 				PushDataStack(r1 | r2);
 			} break;
-			case BITWISE_XOR: {
+			case COB_CASE(BITWISE_XOR): {
 				r1 = PopDataStack();
 				r2 = PopDataStack();
 				PushDataStack(r1 ^ r2);
 			} break;
-			case BITWISE_NOT: {
+			case COB_CASE(BITWISE_NOT): {
 				r1 = PopDataStack();
 				PushDataStack(~r1);
 			} break;
 
-			case EXPLODE: {
+			case COB_CASE(EXPLODE): {
 				r1 = GET_LONG_PC();
 				r2 = PopDataStack();
 				cobInst->Explode(r1, r2);
 			} break;
 
-			case PLAY_SOUND: {
+			case COB_CASE(PLAY_SOUND): {
 				r1 = GET_LONG_PC();
 				r2 = PopDataStack();
 				cobInst->PlayUnitSound(r1, r2);
 			} break;
 
-			case PUSH_STATIC: {
+			case COB_CASE(PUSH_STATIC): {
 				r1 = GET_LONG_PC();
 
 				if (static_cast<size_t>(r1) < cobInst->staticVars.size())
 					PushDataStack(cobInst->staticVars[r1]);
 			} break;
 
-			case SET_NOT_EQUAL: {
+			case COB_CASE(SET_NOT_EQUAL): {
 				r1 = PopDataStack();
 				r2 = PopDataStack();
 
 				PushDataStack(int(r1 != r2));
 			} break;
-			case SET_EQUAL: {
+			case COB_CASE(SET_EQUAL): {
 				r1 = PopDataStack();
 				r2 = PopDataStack();
 
 				PushDataStack(int(r1 == r2));
 			} break;
 
-			case SET_LESS: {
+			case COB_CASE(SET_LESS): {
 				r2 = PopDataStack();
 				r1 = PopDataStack();
 
 				PushDataStack(int(r1 < r2));
 			} break;
-			case SET_LESS_OR_EQUAL: {
+			case COB_CASE(SET_LESS_OR_EQUAL): {
 				r2 = PopDataStack();
 				r1 = PopDataStack();
 
 				PushDataStack(int(r1 <= r2));
 			} break;
 
-			case SET_GREATER: {
+			case COB_CASE(SET_GREATER): {
 				r2 = PopDataStack();
 				r1 = PopDataStack();
 
 				PushDataStack(int(r1 > r2));
 			} break;
-			case SET_GREATER_OR_EQUAL: {
+			case COB_CASE(SET_GREATER_OR_EQUAL): {
 				r2 = PopDataStack();
 				r1 = PopDataStack();
 
 				PushDataStack(int(r1 >= r2));
 			} break;
 
-			case RAND: {
+			case COB_CASE(RAND): {
 				r2 = PopDataStack();
 				r1 = PopDataStack();
 				r3 = gsRNG.NextInt(r2 - r1 + 1) + r1;
 				PushDataStack(r3);
 			} break;
-			case EMIT_SFX: {
+			case COB_CASE(EMIT_SFX): {
 				r1 = PopDataStack();
 				r2 = GET_LONG_PC();
 				cobInst->EmitSfx(r1, r2);
 			} break;
-			case MUL: {
+			case COB_CASE(MUL): {
 				r1 = PopDataStack();
 				r2 = PopDataStack();
 				PushDataStack(r1 * r2);
 			} break;
 
 
-			case SIGNAL: {
+			case COB_CASE(SIGNAL): {
 				r1 = PopDataStack();
 				cobInst->Signal(r1);
 			} break;
-			case SET_SIGNAL_MASK: {
+			case COB_CASE(SET_SIGNAL_MASK): {
 				r1 = PopDataStack();
 				signalMask = r1;
 			} break;
 
 
-			case TURN: {
+			case COB_CASE(TURN): {
 				r2 = PopDataStack();
 				r1 = PopDataStack();
 				r3 = GET_LONG_PC(); // piece
@@ -547,7 +635,7 @@ bool CCobThread::Tick()
 
 				cobInst->Turn(r3, r4, r1, r2);
 			} break;
-			case GET: {
+			case COB_CASE(GET): {
 				r5 = PopDataStack();
 				r4 = PopDataStack();
 				r3 = PopDataStack();
@@ -560,19 +648,19 @@ bool CCobThread::Tick()
 				r6 = cobInst->GetUnitVal(r1, r2, r3, r4, r5);
 				PushDataStack(r6);
 			} break;
-			case ADD: {
+			case COB_CASE(ADD): {
 				r2 = PopDataStack();
 				r1 = PopDataStack();
 				PushDataStack(r1 + r2);
 			} break;
-			case SUB: {
+			case COB_CASE(SUB): {
 				r2 = PopDataStack();
 				r1 = PopDataStack();
 				r3 = r1 - r2;
 				PushDataStack(r3);
 			} break;
 
-			case DIV: {
+			case COB_CASE(DIV): {
 				r2 = PopDataStack();
 				r1 = PopDataStack();
 
@@ -584,7 +672,7 @@ bool CCobThread::Tick()
 				}
 				PushDataStack(r3);
 			} break;
-			case MOD: {
+			case COB_CASE(MOD): {
 				r2 = PopDataStack();
 				r1 = PopDataStack();
 
@@ -597,38 +685,38 @@ bool CCobThread::Tick()
 			} break;
 
 
-			case MOVE: {
+			case COB_CASE(MOVE): {
 				r1 = GET_LONG_PC();
 				r2 = GET_LONG_PC();
 				r4 = PopDataStack();
 				r3 = PopDataStack();
 				cobInst->Move(r1, r2, r3, r4);
 			} break;
-			case MOVE_NOW: {
+			case COB_CASE(MOVE_NOW): {
 				r1 = GET_LONG_PC();
 				r2 = GET_LONG_PC();
 				r3 = PopDataStack();
 				cobInst->MoveNow(r1, r2, r3);
 			} break;
-			case TURN_NOW: {
+			case COB_CASE(TURN_NOW): {
 				r1 = GET_LONG_PC();
 				r2 = GET_LONG_PC();
 				r3 = PopDataStack();
 				cobInst->TurnNow(r1, r2, r3);
 			} break;
-			case SCALE: {
+			case COB_CASE(SCALE): {
 				r1 = GET_LONG_PC();
 				r3 = PopDataStack();
 				r2 = PopDataStack();
 				cobInst->Scale(r1, r2, r3);
 			} break;
-			case SCALE_NOW: {
+			case COB_CASE(SCALE_NOW): {
 				r1 = GET_LONG_PC();
 				r2 = PopDataStack();
 				cobInst->ScaleNow(r1, r2);
 			} break;
 
-			case WAIT_TURN: {
+			case COB_CASE(WAIT_TURN): {
 				r1 = GET_LONG_PC();
 				r2 = GET_LONG_PC();
 
@@ -639,7 +727,7 @@ bool CCobThread::Tick()
 					return true;
 				}
 			} break;
-			case WAIT_MOVE: {
+			case COB_CASE(WAIT_MOVE): {
 				r1 = GET_LONG_PC();
 				r2 = GET_LONG_PC();
 
@@ -650,7 +738,7 @@ bool CCobThread::Tick()
 					return true;
 				}
 			} break;
-			case WAIT_SCALE: {
+			case COB_CASE(WAIT_SCALE): {
 				r1 = GET_LONG_PC();
 
 				if (cobInst->NeedsWait(CCobInstance::AScale, r1, -1)) {
@@ -661,7 +749,7 @@ bool CCobThread::Tick()
 				}
 			} break;
 
-			case SET: {
+			case COB_CASE(SET): {
 				r2 = PopDataStack();
 				r1 = PopDataStack();
 
@@ -674,45 +762,45 @@ bool CCobThread::Tick()
 			} break;
 
 
-			case ATTACH: {
+			case COB_CASE(ATTACH): {
 				r3 = PopDataStack();
 				r2 = PopDataStack();
 				r1 = PopDataStack();
 				cobInst->AttachUnit(r2, r1);
 			} break;
-			case DROP: {
+			case COB_CASE(DROP): {
 				r1 = PopDataStack();
 				cobInst->DropUnit(r1);
 			} break;
 
 			// like bitwise ops, but only on values 1 and 0
-			case LOGICAL_NOT: {
+			case COB_CASE(LOGICAL_NOT): {
 				r1 = PopDataStack();
 				PushDataStack(int(r1 == 0));
 			} break;
-			case LOGICAL_AND: {
+			case COB_CASE(LOGICAL_AND): {
 				r1 = PopDataStack();
 				r2 = PopDataStack();
 				PushDataStack(int(r1 && r2));
 			} break;
-			case LOGICAL_OR: {
+			case COB_CASE(LOGICAL_OR): {
 				r1 = PopDataStack();
 				r2 = PopDataStack();
 				PushDataStack(int(r1 || r2));
 			} break;
-			case LOGICAL_XOR: {
+			case COB_CASE(LOGICAL_XOR): {
 				r1 = PopDataStack();
 				r2 = PopDataStack();
 				PushDataStack(int((!!r1) ^ (!!r2)));
 			} break;
 
 
-			case HIDE: {
+			case COB_CASE(HIDE): {
 				r1 = GET_LONG_PC();
 				cobInst->SetVisibility(r1, false);
 			} break;
 
-			case SHOW: {
+			case COB_CASE(SHOW): {
 				r1 = GET_LONG_PC();
 
 				int i;

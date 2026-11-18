@@ -18,7 +18,148 @@
 #include "System/Log/ILog.h"
 #include "System/StringUtil.h"
 #include "System/TimeProfiler.h"
+#include "System/Config/ConfigHandler.h"
 #include "../tools/pr-downloader/src/pr-downloader.h"
+#if defined(BARDROID_SIM)
+#include <algorithm>
+#include "fmt/format.h"
+static int LoadFileWithModes(const std::string& fileName, std::string& data, const std::string& vfsModes);
+CONFIG(std::string, BarDroidUnsyncedGadgetsOff).defaultValue("").description("BAR Droid: gadget files (comma separated names, e.g. gfx_fire_smoke_gl4.lua) the unsynced LuaRules state does not load: drawing-only effects off; the synced game loads them as always");
+CONFIG(std::string, BarDroidGameWidgetsDir).defaultValue("").description("BAR Droid: a folder in the write dir whose LuaUI/Widgets files LuaUI's archive reads (VFS.ZIP) see as the game's own: the app's input widgets load as game widgets, not as user widgets. Unsynced LuaUI only");
+CONFIG(std::string, BarDroidPhoneLuaDir).defaultValue("").description("BAR Droid: a folder in the write dir with patches for the game's widgets and gadgets (LuaUI/Widgets/<file>.lua.patch, LuaRules/Gadgets/<file>.lua.patch): LuaUI and the unsynced LuaRules state load such a file with its patches applied (all or none); the synced state always loads the game's own");
+
+namespace {
+	// BAR Droid (engine branch; Kailil, 2026-11-06, on a BAR developer's advice: the app's touch and gamepad widgets are the
+	// phone's mouse and keyboard, not the unit-control widgets BAR's lobby option is there for, and "it should run
+	// regardless ... needed to be able to play bar on android"): LuaUI's reads of the game archive (modes with the game's
+	// archive and without the raw file system, as BAR's widget handler reads its own widgets) also see
+	// BarDroidGameWidgetsDir's LuaUI/Widgets, under their LuaUI/Widgets names. The synced states, the archives and their
+	// checksums are untouched; raw reads do not see the folder (BAR's handler lists the user widgets raw: the app's are
+	// not among them). Loading a file there also answers modes with the raw file system in them, once the file was
+	// not found the usual way: an older BAR release's handler (a replay plays the release it was recorded with) loads its
+	// own widgets "raw first". Returns "<dir>/", or "" for none.
+	const std::string& BarDroidGameWidgets(lua_State* L, bool synced, const std::string& modes, bool listing)
+	{
+		static const std::string none;
+		static const std::string dir = [] {
+			std::string d = configHandler->GetString("BarDroidGameWidgetsDir");
+			if (!d.empty() && d.back() != '/')
+				d += '/';
+			return d;
+		}();
+		if (synced || dir.empty() || modes.find(SPRING_VFS_MOD[0]) == std::string::npos)
+			return none;
+		if (listing && modes.find(SPRING_VFS_RAW[0]) != std::string::npos)
+			return none;
+		const CLuaHandle* handle = CLuaHandle::GetHandle(L);
+		if (handle == nullptr || handle->GetName() != "LuaUI")
+			return none;
+		return dir;
+	}
+
+	std::string BarDroidVfsPath(const std::string& path)
+	{
+		std::string p = StringToLower(path);
+		std::replace(p.begin(), p.end(), '\\', '/');
+		return p;
+	}
+
+	bool BarDroidWidgetDir(const std::string& dir)
+	{
+		std::string d = BarDroidVfsPath(dir);
+		while (!d.empty() && d.back() == '/')
+			d.pop_back();
+		return d == "luaui/widgets";
+	}
+
+	bool BarDroidWidgetFile(const std::string& file)
+	{
+		const std::string f = BarDroidVfsPath(file);
+		return f.rfind("luaui/widgets/", 0) == 0 && f.find("..") == std::string::npos;
+	}
+
+	// BAR Droid (engine branch): phone versions of the game's widgets and of gadgets' unsynced halves, as patches. LuaUI's
+	// and the unsynced LuaRules state's reads of LuaUI/Widgets/<file>.lua and LuaRules/Gadgets/<file>.lua (BAR's
+	// handlers load each one with VFS.LoadFile) get the game's file with the patches in BarDroidPhoneLuaDir's
+	// <same path>.patch applied, when that file exists (the write dir, raw). A patch file is blocks of
+	//   @@@ find      (a line of its own)
+	//   <text, found exactly once in the file>
+	//   @@@ with
+	//   <its replacement>
+	//   @@@ end
+	// applied in order; if one finds no place or more than one, none is applied and the game's file loads as it is
+	// (a BAR update that rewrote the part: the game's own runs). A gadget file runs in both LuaRules states; the
+	// synced one never sees the patches, so the synced half, the game's results and the archives' checksums stay BAR's
+	// own; what the unsynced state and LuaUI do is this client's alone (drawing, sounds, the interface).
+	// Returns the patch file's path, or "" for none.
+	std::string BarDroidPhonePatch(lua_State* L, bool synced, const std::string& file)
+	{
+		static const std::string dir = [] {
+			std::string d = configHandler->GetString("BarDroidPhoneLuaDir");
+			if (!d.empty() && d.back() != '/')
+				d += '/';
+			return d;
+		}();
+		if (synced || dir.empty())
+			return "";
+		const CLuaHandle* handle = CLuaHandle::GetHandle(L);
+		if (handle == nullptr)
+			return "";
+		const std::string f = BarDroidVfsPath(file);
+		std::string sub;
+		if (handle->GetName() == "LuaRules" && f.rfind("luarules/gadgets/", 0) == 0)
+			sub = "LuaRules/Gadgets/";
+		else if (handle->GetName() == "LuaUI" && f.rfind("luaui/widgets/", 0) == 0)
+			sub = "LuaUI/Widgets/";
+		if (sub.empty() || f.find("..") != std::string::npos || f.find('/', sub.size()) != std::string::npos)
+			return "";
+		const std::string path = dir + sub + FileSystem::GetFilename(f) + ".patch";
+		return CFileHandler::FileExists(path, SPRING_VFS_RAW) ? path : "";
+	}
+
+	// the patches of BarDroidPhonePatch applied to data (all, or none: false)
+	bool BarDroidApplyPatches(const std::string& patchFile, std::string& data, std::string& why)
+	{
+		std::string patches;
+		if (LoadFileWithModes(patchFile, patches, SPRING_VFS_RAW) != 1) {
+			why = "unreadable";
+			return false;
+		}
+		std::erase(patches, '\r');
+		std::string text = data;
+		std::erase(text, '\r');
+		size_t at = 0;
+		int n = 0;
+		static const std::string FIND = "@@@ find\n", WITH = "\n@@@ with\n", END = "\n@@@ end";
+		while ((at = patches.find(FIND, at)) != std::string::npos) {
+			const size_t f0 = at + FIND.size();
+			const size_t w = patches.find(WITH, f0);
+			const size_t e = (w == std::string::npos) ? w : patches.find(END, w + WITH.size());
+			if (e == std::string::npos) {
+				why = fmt::format("patch {} unfinished", n + 1);
+				return false;
+			}
+			const std::string find = patches.substr(f0, w - f0);
+			const std::string with = patches.substr(w + WITH.size(), e - (w + WITH.size()));
+			const size_t p = text.find(find);
+			if (find.empty() || p == std::string::npos || text.find(find, p + 1) != std::string::npos) {
+				why = fmt::format("patch {} {}", n + 1, (p == std::string::npos) ? "finds no place" : "finds more than one place");
+				return false;
+			}
+			text.replace(p, find.size(), with);
+			at = e + END.size();
+			n++;
+		}
+		if (n == 0) {
+			why = "no patches";
+			return false;
+		}
+		data = std::move(text);
+		why = fmt::format("{} patches", n);
+		return true;
+	}
+}
+#endif
 #include "fmt/format.h"
 
 #include "System/Misc/TracyDefs.h"
@@ -420,11 +561,30 @@ int LuaVFS::LoadFile(lua_State* L, bool synced)
 	// if (!LuaIO::IsSimplePath(filename)) return 0;
 
 	string data;
-	if (LoadFileWithModes(filename, data, GetModes(L, 2, synced)) == 1) {
+	const std::string modes = GetModes(L, 2, synced);
+	if (LoadFileWithModes(filename, data, modes) == 1) {
+#ifdef BARDROID_SIM
+		// (the phone version of a widget or of a gadget's unsynced half: BarDroidPhonePatch)
+		if (const std::string patch = BarDroidPhonePatch(L, synced, filename); !patch.empty()) {
+			std::string why;
+			const bool applied = BarDroidApplyPatches(patch, data, why);
+			LOG("[BarDroid] phone version of %s (%s): %s", filename.c_str(), CLuaHandle::GetHandle(L)->GetName().c_str(),
+				applied ? why.c_str() : (why + ": the game's own file loads").c_str());
+		}
+#endif
 		LuaUtils::TracyRemoveAlsoExtras(data.data());
 		lua_pushsstring(L, data);
 		return 1;
 	}
+#ifdef BARDROID_SIM
+	// (the app's widgets as the game's: BarDroidGameWidgets)
+	const std::string& gameWidgets = BarDroidGameWidgets(L, synced, modes, false);
+	if (!gameWidgets.empty() && BarDroidWidgetFile(filename) && LoadFileWithModes(gameWidgets + filename, data, SPRING_VFS_RAW) == 1) {
+		LuaUtils::TracyRemoveAlsoExtras(data.data());
+		lua_pushsstring(L, data);
+		return 1;
+	}
+#endif
 	return 0;
 }
 
@@ -478,7 +638,15 @@ int LuaVFS::FileExists(lua_State* L, bool synced)
 	// the path may point to a file or dir outside of any data-dir
 	// if (!LuaIO::IsSimplePath(filename)) return 0;
 
-	lua_pushboolean(L, CFileHandler::FileExists(filename, vfsModes));
+	bool exists = CFileHandler::FileExists(filename, vfsModes);
+#ifdef BARDROID_SIM
+	// (the app's widgets as the game's: BarDroidGameWidgets)
+	if (!exists && BarDroidWidgetFile(filename)) {
+		const std::string& gameWidgets = BarDroidGameWidgets(L, synced, vfsModes, false);
+		exists = !gameWidgets.empty() && CFileHandler::FileExists(gameWidgets + filename, SPRING_VFS_RAW);
+	}
+#endif
+	lua_pushboolean(L, exists);
 	return 1;
 }
 
@@ -529,6 +697,42 @@ int LuaVFS::DirList(lua_State* L, bool synced)
 	const std::string& modes = GetModes(L, 3, synced);
 	const bool recursive = luaL_optboolean(L, 4, false);
 
+#ifdef BARDROID_SIM
+	// BAR Droid (engine branch): gadget files named in BarDroidUnsyncedGadgetsOff (comma separated, e.g.
+	// "gfx_nano_particles_gl4.lua,gfx_fire_smoke_gl4.lua") are left out of the lists the *unsynced* LuaRules state gets,
+	// so their drawing-only halves never load. The synced state's lists are untouched (its own DirList), so the game's
+	// synced code and its results stay the same.
+	if (!synced && CLuaHandle::GetHandle(L) != nullptr && CLuaHandle::GetHandle(L)->GetName() == "LuaRules") {
+		static const std::string off = StringToLower(configHandler->GetString("BarDroidUnsyncedGadgetsOff"));
+		if (!off.empty()) {
+			std::vector<std::string> files = CFileHandler::DirList(dir, pattern, modes, recursive);
+			std::erase_if(files, [](const std::string& path) {
+				const std::string name = StringToLower(FileSystem::GetFilename(path));
+				const size_t at = off.find(name);
+				return !name.empty() && at != std::string::npos && (at == 0 || off[at - 1] == ',' || off[at - 1] == ' ')
+					&& (at + name.size() == off.size() || off[at + name.size()] == ',' || off[at + name.size()] == ' ');
+			});
+			LuaUtils::PushStringVector(L, files);
+			return 1;
+		}
+	}
+	// the app's widgets as the game's (BarDroidGameWidgets): BAR's handler lists the game's LuaUI/Widgets with them in
+	const std::string& gameWidgets = BarDroidGameWidgets(L, synced, modes, true);
+	if (!gameWidgets.empty() && BarDroidWidgetDir(dir)) {
+		std::vector<std::string> files = CFileHandler::DirList(dir, pattern, modes, recursive);
+		const std::string prefix = BarDroidVfsPath(gameWidgets);
+		for (std::string file : CFileHandler::DirList(gameWidgets + dir, pattern, SPRING_VFS_RAW, recursive)) {
+			const size_t at = BarDroidVfsPath(file).find(prefix);
+			if (at == std::string::npos)
+				continue;
+			file.erase(0, at + prefix.size());
+			if (std::find(files.begin(), files.end(), file) == files.end())
+				files.push_back(file);
+		}
+		LuaUtils::PushStringVector(L, files);
+		return 1;
+	}
+#endif
 	LuaUtils::PushStringVector(L, CFileHandler::DirList(dir, pattern, modes, recursive));
 	return 1;
 }

@@ -49,6 +49,10 @@ CONFIG(int, SoftParticles).defaultValue(1).safemodeValue(0).description("Soften 
 CONFIG(float, ProjectileReflectionMinRadius).defaultValue(0.0f).minimumValue(0.0f).description("Alpha particles with a draw radius (in elmos) smaller than this are skipped in water reflection passes; 0 draws all of them. Small particles are barely visible in reflections, so culling them there is cheap visually and saves a large part of the reflection pass on effect-heavy frames.");
 CONFIG(bool, ProjectileDrawThreadedFill).defaultValue(true).safemodeValue(false).description("Generate alpha-particle geometry on the ThreadPool workers instead of the render thread. Draw order is preserved; the few particle types whose Draw is not thread-safe stay on the render thread.");
 CONFIG(bool, ProjectileDrawReuseWaterPasses).defaultValue(true).safemodeValue(false).description("When water is visible, reuse the below-water pass' alpha particle geometry for the above-water pass instead of regenerating and re-uploading it. The two passes contain identical geometry by construction; disable to force a full refill per pass.");
+#if defined(BARDROID_SIM)
+CONFIG(int, ProjectileAtlasDownscale).defaultValue(1).minimumValue(1).maximumValue(4).description("BAR Droid: shrink the projectile and ground effect textures by this factor on each side (graphics memory on phones)");
+CONFIG(int, MaxDrawnParticles).defaultValue(0).minimumValue(0).description("BAR Droid: draw at most this many see-through projectiles and particles a frame, the nearest to the camera (0: all; drawing only, the simulation keeps every one)");
+#endif
 
 // sort keys are snapshotted into SortableParticle at fill time, so sorting
 // works on a contiguous array instead of dereferencing two CProjectile
@@ -199,6 +203,14 @@ void CProjectileDrawer::Init() {
 
 	textureAtlas  = new CTextureAtlas(CTextureAtlas::ATLAS_ALLOC_MP_LEGACY, 0, 0, "ExplosFXAtlas", true);
 	groundFXAtlas = new CTextureAtlas(CTextureAtlas::ATLAS_ALLOC_MP_LEGACY, 0, 0, "GroundFXAtlas", true);
+#if defined(BARDROID_SIM)
+	textureAtlas->downscale = groundFXAtlas->downscale = configHandler->GetInt("ProjectileAtlasDownscale");
+	if (textureAtlas->downscale > 1)
+		LOG("[ProjectileDrawer] BAR Droid: projectile and ground effect textures shrunk %dx on each side", textureAtlas->downscale);
+	maxDrawnParticles = static_cast<size_t>(configHandler->GetInt("MaxDrawnParticles"));
+	if (maxDrawnParticles > 0)
+		LOG("[ProjectileDrawer] BAR Droid: at most %u see-through particles drawn a frame, the nearest", static_cast<unsigned>(maxDrawnParticles));
+#endif
 
 	LuaParser resourcesParser("gamedata/resources.lua", SPRING_VFS_MOD_BASE, SPRING_VFS_ZIP);
 	LuaParser mapResParser("gamedata/resources_map.lua", SPRING_VFS_MAP_BASE, SPRING_VFS_ZIP);
@@ -912,6 +924,24 @@ void CProjectileDrawer::DrawAlpha(bool drawAboveWater, bool drawBelowWater, bool
 					unsortedParticles.emplace_back(p);
 			}
 		}
+
+#if defined(BARDROID_SIM)
+		// BAR Droid: big battles on phones (Kailil, 2026-11-04: "cutting drawing projectiles if the total projectiles is over
+		// x amount"): each particle is built on the CPU and blended on the GPU every frame. Only the nearest ones are drawn;
+		// the simulation and every other pass keep them all. (The nearest: the largest distance keys, the low 32 bits of
+		// sortKey, DistanceSortKey; the sort below then orders the ones kept.)
+		if (maxDrawnParticles > 0) {
+			if (sortedParticles.size() > maxDrawnParticles) {
+				std::nth_element(sortedParticles.begin(), sortedParticles.begin() + maxDrawnParticles, sortedParticles.end(), [](const SortableParticle& a, const SortableParticle& b) {
+					return static_cast<uint32_t>(a.sortKey) > static_cast<uint32_t>(b.sortKey);
+				});
+				sortedParticles.resize(maxDrawnParticles);
+			}
+			const size_t room = maxDrawnParticles - sortedParticles.size();
+			if (unsortedParticles.size() > room)
+				unsortedParticles.resize(room);
+		}
+#endif
 
 		{
 			ZoneScopedN("ProjectileDrawer::DrawAlpha(SO)");

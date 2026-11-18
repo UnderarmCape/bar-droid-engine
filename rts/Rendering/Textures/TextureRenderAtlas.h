@@ -68,7 +68,13 @@ public:
 	uint32_t DisownTexture();
 
 	bool DumpTexture(const std::string& fileExt = "png") const;
+
+	// BAR Droid (BarDroidIconMaxSize): a picture larger than this on a side takes a smaller place in the atlas, drawn
+	// into it from its own mipmaps (0: as it is)
+	void SetMaxSubTexSide(int side) { maxSubTexSide = side; }
 private:
+	int maxSubTexSide = 0;
+	spring::unordered_map<std::string, float> subTexLod;   // (the source mipmap a shrunk picture is drawn from)
 
 
 	bool AddTexFromBitmapRaw(const std::string& name, const CBitmap& bm, const float4& subTexCoords, const std::string& refFileName);

@@ -134,6 +134,11 @@ namespace ThreadPool {
 	bool HasThreads();
 	int GetMaxThreads();
 	int GetNumThreads();
+#ifdef BARDROID_SIM
+	// BAR Droid: the most indices a for_mt fetch takes at once (BarDroidForGrain, refreshed once a simulation frame by
+	// CUnitHandler::UpdatePreFrame; 0 or 1: one at a time, as stock)
+	extern int barDroidForGrain;
+#endif
 	void NotifyWorkerThreads(bool force, bool async);
 
 	static constexpr int MAX_THREADS = 32;
@@ -150,6 +155,22 @@ struct MultithreadedSection {
 	}
 };
 
+
+#if defined(BARDROID_SIM) && defined(__linux__)
+// BAR Droid (engine branch): a thread waiting for a task group (WaitForFinished) spun on the clock until the group was
+// done, up to 500 ms: on a phone the main thread waited out the workers at full power on its fastest core, ~7 % of its
+// time reading the clock in a late 8v8 replay (simpleperf). With BARDROID_POOL_SLEEP it spins briefly, then sleeps on the
+// group's task counter (a futex) until the thread that finishes the group's last task wakes it. Which thread computes
+// what is unchanged: scheduling only, no result changes.
+#include <climits>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#define BARDROID_POOL_SLEEP 1
+#endif
 
 class ITaskGroup
 {
@@ -173,6 +194,13 @@ public:
 		const spring_time t0 = spring_now();
 
 		while (ExecuteStep(tid));
+
+		#ifdef BARDROID_POOL_SLEEP
+		// (the group done: wake a thread sleeping on it in WaitForFinished; both sides seq_cst, so either this sees the
+		// sleeper or the sleeper sees the count at 0 and does not sleep)
+		if (sleepers.load() != 0 && remainingTasks.load() == 0)
+			syscall(SYS_futex, reinterpret_cast<int*>(&remainingTasks), FUTEX_WAKE_PRIVATE, INT_MAX, nullptr, nullptr, 0);
+		#endif
 
 		const spring_time t1 = spring_now();
 		const spring_time dt = t1 - t0;
@@ -234,6 +262,9 @@ public:
 
 	void ResetState(bool queued, bool pooled, bool inuse) {
 		remainingTasks.store(0);
+		#ifdef BARDROID_POOL_SLEEP
+		sleepers.store(0);
+		#endif
 		wantedThread.store(0);
 		taskPoolMask.store(((1 * pooled) << 0) + ((1 * inuse) << 1));
 
@@ -248,6 +279,9 @@ public:
 
 	std::atomic_bool inTaskQueue; // whether this task is still in a thread's queue
 	std::atomic_bool execLoopDone; // whether the thread running this task is about to exit ExecLoop
+	#ifdef BARDROID_POOL_SLEEP
+	std::atomic_int sleepers; // threads asleep on remainingTasks in WaitForFinished
+	#endif
 
 private:
 	static std::atomic_uint lastId;
@@ -684,11 +718,36 @@ public:
 		this->to   = to;
 		this->step = step;
 		this->func = func;
+#ifdef BARDROID_SIM
+		// BAR Droid: each fetch takes a block of indices (about eight blocks a thread, at most BarDroidForGrain), not
+		// one: two contended atomics per index (this counter and remainingTasks) were most of the cost of loops with
+		// little work an index (the projectiles' draw flags, the unit scripts' animations). Each index is still run
+		// once by one thread; which thread runs which was never fixed. 0: one at a time, as stock.
+		const int total = remainingTasks.load(std::memory_order_relaxed);
+		const int maxGrain = ThreadPool::barDroidForGrain;
+		grain = (maxGrain <= 1) ? 1 : std::clamp(total / (ThreadPool::GetNumThreads() * 8), 1, maxGrain);
+#endif
 	}
 
 	bool IsSliceTask() const override { return true; }
 	bool ExecuteStep(int tid) override
 	{
+#ifdef BARDROID_SIM
+		if (grain > 1) {
+			const int k = ctr.fetch_add(grain, std::memory_order_relaxed);
+			int i = from + (step * k);
+
+			if (i >= to)
+				return false;
+
+			int n = 0;
+			for (; n < grain && i < to; ++n, i += step) {
+				func(i);
+			}
+			remainingTasks -= n;
+			return true;
+		}
+#endif
 		const int i = from + (step * ctr.fetch_add(1, std::memory_order_relaxed));
 
 		if (i < to) {
@@ -702,6 +761,9 @@ public:
 
 protected:
 	std::atomic<int> ctr;
+#ifdef BARDROID_SIM
+	int grain = 1;
+#endif
 	std::function<void(const int)> func;
 
 	int from;
@@ -885,7 +947,15 @@ static inline void for_mt_chunk(int b, int e, F&& f, int minChunkSize = 1, int m
 
 	static const int maxThreads = ThreadPool::GetNumThreads();
 
+#ifdef BARDROID_SIM
+	// BAR Droid (engine branch): about four chunks a thread, taken as each thread comes free (for_mt below), not one
+	// equal chunk each: on a phone the threads run on cores of different speeds and clocks, and the main thread waited
+	// for the slowest chunk (~6% of its time spinning in a late 8v8 on the dev phone). Each index is still done once by
+	// one thread, so nothing changes in the results.
+	const int chunkSize = std::clamp(numElems / (maxThreads * 4) + 1, minChunkSize, maxChunkSize);
+#else
 	const int chunkSize = std::clamp(numElems / maxThreads + (numElems % maxThreads != 0), minChunkSize, maxChunkSize);
+#endif
 	const int numThreads = numElems / chunkSize + (numElems % chunkSize != 0);
 
 	if (numThreads == 1) {

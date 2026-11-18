@@ -3,6 +3,7 @@
 #include "Rendering/GL/myGL.h"
 
 #include "WorldDrawer.h"
+#include "Rendering/BarDroidGpuTimer.h"
 #include "Sim/Units/UnitDefHandler.h"
 #include "Sim/Features/FeatureDefHandler.h"
 #include "Sim/Weapons/WeaponDefHandler.h"
@@ -165,6 +166,14 @@ void CWorldDrawer::InitPost() const
 				mv.UploadVBOs();
 			}
 			mv.SetSafeToDeleteVectors();
+#if defined(BARDROID_SIM)
+			{
+				// BAR Droid: the CPU copies go now, not at the first upload after the load (nothing new to upload: it only
+				// clears), before the pathfinder and LuaRules load
+				auto lock = CLoadLock::GetUniqueLock();
+				mv.UploadVBOs();
+			}
+#endif
 			modelLoader.LogErrors();
 			CModelsLock::SetThreadSafety(false); //all models are already preloaded
 		}
@@ -324,8 +333,11 @@ void CWorldDrawer::Draw() const
 	}
 
 
-	DrawMiscObjects();
-	DrawBelowWaterOverlay();
+	{
+		BARDROID_GPU_TIMER("WorldMisc");
+		DrawMiscObjects();
+		DrawBelowWaterOverlay();
+	}
 
 	glDisable(GL_FOG);
 }
@@ -339,10 +351,17 @@ void CWorldDrawer::DrawOpaqueObjects() const
 		{
 			SCOPED_TIMER("Draw::World::Terrain");
 			SCOPED_GL_DEBUGGROUP("Draw::World::Terrain");
-			gd->Draw(DrawPass::Normal);
-			depthBufferCopy->MakeDepthBufferCopy();
+			{
+				BARDROID_GPU_TIMER("Terrain");
+				gd->Draw(DrawPass::Normal);
+			}
+			{
+				BARDROID_GPU_TIMER("DepthCopy");
+				depthBufferCopy->MakeDepthBufferCopy();
+			}
 		}
 		{
+			BARDROID_GPU_TIMER("Decals");
 			eventHandler.DrawPreDecals();
 			SCOPED_TIMER("Draw::World::Decals");
 			SCOPED_GL_DEBUGGROUP("Draw::World::Decals");
@@ -350,6 +369,7 @@ void CWorldDrawer::DrawOpaqueObjects() const
 			projectileDrawer->DrawGroundFlashes();
 		}
 		{
+			BARDROID_GPU_TIMER("Foliage");
 			SCOPED_TIMER("Draw::World::Foliage");
 			SCOPED_GL_DEBUGGROUP("Draw::World::Foliage");
 			grassDrawer->Draw();
@@ -359,20 +379,25 @@ void CWorldDrawer::DrawOpaqueObjects() const
 
 	// not an opaque rendering, but makes sense to run after the terrain was rendered
 	{
+		BARDROID_GPU_TIMER("Sky");
 		const auto& sky = ISky::GetSky();
 		sky->Draw();
 	}
 
-	selectedUnitsHandler.Draw();
-	eventHandler.DrawWorldPreUnit();
+	{
+		selectedUnitsHandler.Draw();
+		eventHandler.DrawWorldPreUnit();
+	}
 
 	{
+		BARDROID_GPU_TIMER("ModelsOpaque");
 		SCOPED_TIMER("Draw::World::Models::Opaque");
 		SCOPED_GL_DEBUGGROUP("Draw::World::Models::Opaque");
 		unitDrawer->Draw(false);
 		featureDrawer->Draw(false);
 	}
 	{
+		BARDROID_GPU_TIMER("ProjectileModels");
 		SCOPED_TIMER("Draw::World::Models::Projectiles");
 		SCOPED_GL_DEBUGGROUP("Draw::World::Models::Projectiles");
 		projectileDrawer->DrawOpaque(false);
@@ -398,6 +423,7 @@ void CWorldDrawer::DrawAlphaObjects() const
 	const bool hasWaterRendering = globalRendering->drawWater && readMap->HasVisibleWater();
 
 	{
+		BARDROID_GPU_TIMER("AlphaModels");
 		SCOPED_TIMER("Draw::World::Models::Alpha");
 		SCOPED_GL_DEBUGGROUP("Draw::World::Models::Alpha");
 		// clip in model-space
@@ -414,6 +440,7 @@ void CWorldDrawer::DrawAlphaObjects() const
 		featureDrawer->DrawAlphaPass(false);
 	}
 	{
+		BARDROID_GPU_TIMER("Particles");
 		SCOPED_TIMER("Draw::World::Particles");
 		SCOPED_GL_DEBUGGROUP("Draw::World::Particles");
 		projectileDrawer->DrawAlpha(!hasWaterRendering, true, false, false);
@@ -428,6 +455,7 @@ void CWorldDrawer::DrawAlphaObjects() const
 
 	// draw water (in-between)
 	{
+		BARDROID_GPU_TIMER("Water");
 		SCOPED_TIMER("Draw::World::Water");
 		SCOPED_GL_DEBUGGROUP("Draw::World::Water");
 
@@ -441,6 +469,7 @@ void CWorldDrawer::DrawAlphaObjects() const
 	}
 
 	{
+		BARDROID_GPU_TIMER("AlphaModelsAboveWater");
 		SCOPED_TIMER("Draw::World::Models::Alpha");
 		SCOPED_GL_DEBUGGROUP("Draw::World::Alpha");
 		glPushMatrix();
@@ -454,6 +483,7 @@ void CWorldDrawer::DrawAlphaObjects() const
 		featureDrawer->DrawAlphaPass(false);
 	}
 	{
+		BARDROID_GPU_TIMER("ParticlesAboveWater");
 		SCOPED_TIMER("Draw::World::Particles");
 		SCOPED_GL_DEBUGGROUP("Draw::World::Particles");
 		projectileDrawer->DrawAlpha(true, false, false, false);

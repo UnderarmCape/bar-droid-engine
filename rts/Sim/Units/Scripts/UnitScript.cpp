@@ -192,6 +192,62 @@ bool CUnitScript::DoSpin(float& cur, float dest, float& speed, float accel, int 
 	return false;
 }
 
+#ifdef BARDROID_SIM
+void CUnitScript::BarDroidPrefetchArrays() const
+{
+	BARDROID_PREFETCH(anims.data());
+	if (anims.size() > 2)
+		BARDROID_PREFETCH(reinterpret_cast<const char*>(anims.data()) + 64);
+
+	BARDROID_PREFETCH(pieces.data());
+	BARDROID_PREFETCH(rootPiece);
+
+	// (the model's flags: SetDirty's range and stale flag, the walk's range)
+	if (unit != nullptr)
+		BARDROID_PREFETCH(&unit->localModel.barDroidPrevStale);
+}
+
+void CUnitScript::BarDroidPrefetchPieces() const
+{
+	const size_t numAnims = std::min(anims.size(), size_t(8));
+
+	for (size_t k = 0; k < numAnims; ++k) {
+		const size_t pieceIdx = static_cast<size_t>(anims[k].piece);
+
+		if (pieceIdx >= pieces.size() || pieces[pieceIdx] == nullptr)
+			continue;
+
+		const LocalModelPiece* lmp = pieces[pieceIdx];
+		BARDROID_PREFETCH(&lmp->GetRotation());
+		BARDROID_PREFETCH(&lmp->blockScriptAnims);
+		BARDROID_PREFETCH(&lmp->localModel);
+	}
+}
+
+void CUnitScript::BarDroidPrefetchModelPieces() const
+{
+	const size_t numAnims = std::min(anims.size(), size_t(8));
+
+	for (size_t k = 0; k < numAnims; ++k) {
+		const size_t pieceIdx = static_cast<size_t>(anims[k].piece);
+
+		if (pieceIdx >= pieces.size() || pieces[pieceIdx] == nullptr)
+			continue;
+
+		const LocalModelPiece* lmp = pieces[pieceIdx];
+
+		if (lmp->original != nullptr)
+			BARDROID_PREFETCH(&lmp->original->bakedTransform);
+
+		BARDROID_PREFETCH(lmp->children.data());
+
+		// (the first child: pre-order, the next piece of the model; SetDirty reads its flag)
+		if (lmp->bdLastDesc > lmp->lmodelPieceIndex)
+			BARDROID_PREFETCH(&(lmp + 1)->GetRotation());
+	}
+}
+#endif
+
 /**
  * @brief The multithreaded first half of the original CUnitScript::Tick function first does the heavy lifting of calculating all
 			  new piece positions according to the animations
@@ -201,9 +257,19 @@ void CUnitScript::TickAllAnims(int deltaTime)
 	ZoneScoped;
 
 	// optimize the memory access patterns of the procedure below
+#if defined(BARDROID_SIM)
+	// BAR Droid: most ticks the list is still sorted from the last one (one entry per piece, type and axis: the keys are
+	// unique, so a sorted list has one order and skipping the sort changes nothing)
+	const auto animLess = [](const auto& lhs, const auto& rhs) {
+		return std::tie(lhs.piece, lhs.animType, lhs.axis) < std::tie(rhs.piece, rhs.animType, rhs.axis);
+	};
+	if (!std::is_sorted(anims.begin(), anims.end(), animLess))
+		std::sort(anims.begin(), anims.end(), animLess);
+#else
 	std::sort(anims.begin(), anims.end(), [](const auto& lhs, const auto& rhs) {
 		return std::tie(lhs.piece, lhs.animType, lhs.axis) < std::tie(rhs.piece, rhs.animType, rhs.axis);
 	});
+#endif
 
 	// tick-functions; these never change address
 	static constexpr std::array<TickAnimFunc, ACount> TICK_ANIM_FUNCS = { &CUnitScript::TickTurnAnim, &CUnitScript::TickSpinAnim, &CUnitScript::TickMoveAnim, &CUnitScript::TickScaleAnim };
@@ -215,8 +281,26 @@ void CUnitScript::TickAllAnims(int deltaTime)
 
 	for (auto& ai : anims) {
 		LocalModelPiece& lmp = *pieces[ai.piece];
+#if defined(BARDROID_SIM)
+		// BAR Droid (BarDroidAnimDispatch): the anim's own step called directly (the compiler can inline it), the
+		// same function the table below holds for its type; any other type goes through the table as before
+		bool stepDone;
+		if (BarDroidUnits::animDispatch) {
+			switch (ai.animType) {
+				case ATurn : { stepDone = TickTurnAnim (tickRate, lmp, ai); } break;
+				case ASpin : { stepDone = TickSpinAnim (tickRate, lmp, ai); } break;
+				case AMove : { stepDone = TickMoveAnim (tickRate, lmp, ai); } break;
+				case AScale: { stepDone = TickScaleAnim(tickRate, lmp, ai); } break;
+				default    : { stepDone = std::invoke(TICK_ANIM_FUNCS[ai.animType], this, tickRate, lmp, ai); } break;
+			}
+		} else {
+			stepDone = std::invoke(TICK_ANIM_FUNCS[ai.animType], this, tickRate, lmp, ai);
+		}
+		if ((ai.done |= stepDone)) {
+#else
 		const auto& currFunc = TICK_ANIM_FUNCS[ai.animType];
 		if ((ai.done |= std::invoke(currFunc, this, tickRate, lmp, ai))) {
+#endif
 			if (ai.hasWaiting)
 				doneAnims.emplace_back(ai);
 		}
@@ -226,7 +310,73 @@ void CUnitScript::TickAllAnims(int deltaTime)
 	}
 
 	spring::VectorEraseIfAll(anims, [](const auto& ai) { return ai.done; });
-#if 1
+#if defined(BARDROID_SIM)
+	// BAR Droid (bardroid/sim): the model's pieces in their own array's order, which is pre-order
+	// (LocalModel::CreateLocalModelPieces: every parent before its children; one tree from the root), with each dirty
+	// piece's transform from its parent's (already final) or the identity for the root: the walk below's results
+	// exactly (a piece's transform comes from its parent's alone; SetDirty marks a piece's whole subtree), without
+	// pushing a copy of a transform for every piece of every animating unit every frame (2026-11-07: the walk was most
+	// of TickAllAnims, ~5 % of the engine's CPU in a late 8v8).
+	// (only while the array is the tree's pre-order: Spring.SetUnitPieceParent can put a child before its new parent,
+	// and then its transform would come from the parent's old one; LocalModel::barDroidPreOrder)
+	if (rootPiece->localModel != nullptr && !rootPiece->localModel->pieces.empty() && &rootPiece->localModel->pieces[0] == rootPiece && rootPiece->localModel->barDroidPreOrder) {
+		LocalModel* lm = rootPiece->localModel;
+		auto& lmPieces = lm->pieces;
+
+		// BAR Droid (BarDroidAnimDirtyRange): only the index range the model's dirty pieces lie in (LocalModel keeps
+		// it: every piece marked dirty since the last walk is inside it; the pieces outside are clean, which the walk
+		// would skip anyway)
+		size_t walkBeg = 0;
+		size_t walkEnd = lmPieces.size();
+
+		if (BarDroidUnits::animDirtyRange) {
+			walkBeg = std::min(lm->BarDroidDirtyBegin(), walkEnd);
+			walkEnd = std::min(lm->BarDroidDirtyEnd(), walkEnd);
+		}
+
+		for (size_t n = walkBeg; n < walkEnd; ++n) {
+			LocalModelPiece& lmp = lmPieces[n];
+
+			if (!lmp.GetDirty())
+				continue;
+
+			lmp.SetDirtyRaw(false);
+			lmp.SetWasUpdatedRaw(true);
+			lmp.UpdatePieceSpaceTransform();
+			lmp.UpdateModelSpaceTransform((lmp.parent != nullptr) ? lmp.parent->GetModelSpaceTransformRaw() : Transform{});
+		}
+
+		// no piece of the model is dirty now (every dirty one was in the range, and the walk cleaned it)
+		lm->BarDroidClearDirtyRange();
+		return;
+	}
+	// the pieces walked depth-first from a stack kept per thread (this runs on the worker threads), not breadth-first
+	// through a std::deque made for every animating unit every frame. A piece's transform comes from its parent's
+	// alone, so the order changes no result. (The DFS branch below needs C++23's explicit object parameters, which
+	// GCC 13, the official arm64 build's compiler, does not have.)
+	static thread_local std::vector<std::pair<LocalModelPiece*, Transform>> stack;
+	stack.clear();
+	stack.emplace_back(rootPiece, Transform{});
+
+	while (!stack.empty()) {
+		// copy
+		auto [lmp, pTra] = stack.back();
+		stack.pop_back();
+
+		if (lmp->GetDirty()) {
+			lmp->SetDirtyRaw(false);
+			lmp->SetWasUpdatedRaw(true);
+			lmp->UpdatePieceSpaceTransform();
+			lmp->UpdateModelSpaceTransform(pTra);
+		}
+
+		const Transform& modelTra = lmp->GetModelSpaceTransformRaw();
+
+		for (auto* child : lmp->children) {
+			stack.emplace_back(child, modelTra);
+		}
+	}
+#elif 1
 	// BFS pass
 	std::deque<std::pair<LocalModelPiece*, Transform>> q;
 	q.push_front({ rootPiece, Transform{} });

@@ -31,6 +31,9 @@
 #include "Sim/Path/HAPFS/PathGlobal.h"
 
 #include "System/Misc/TracyDefs.h"
+#ifdef BARDROID_SIM
+#include "Sim/Misc/BarDroidUnits.h"
+#endif
 
 #include "System/Config/ConfigHandler.h"
 CONFIG(bool, UpdateWeaponVectorsMT).deprecated(true);
@@ -337,11 +340,59 @@ void CUnitHandler::UpdateUnitMoveTypes()
 void CUnitHandler::UpdateUnitLosStates()
 {
 	ZoneScopedC(tracy::Color::Goldenrod);
+#ifdef BARDROID_SIM
+	// BAR Droid (engine branch): every unit's new LOS status per ally team worked out on the workers (CalcLosStatus
+	// only reads: the LOS maps, which change in losHandler->Update later in the frame, the unit's place and its own
+	// status), then set in the original order on this thread, where the Lua call-ins run. A status a call-in changed
+	// meanwhile (a gadget setting a LOS mask) is worked out again there, so the result is the serial loop's. ~2.5% of
+	// the main thread in a late 8v8 (simpleperf, dev phone).
+	SCOPED_TIMER("Sim::Unit::LosStates");
+	static std::vector<unsigned short> before, after;
+	static constexpr int BLOCK = 32;
+	const int numAllyTeams = teamHandler.ActiveAllyTeams();
+	const int numUnits = activeUnits.size();
+	before.resize(size_t(numUnits) * numAllyTeams);
+	after.resize(before.size());
+
+	const bool prefetch = BarDroidUnits::losStatePrefetch;
+	for_mt(0, (numUnits + BLOCK - 1) / BLOCK, [this, numUnits, numAllyTeams, prefetch](const int block) {
+		for (int i = block * BLOCK, end = std::min(numUnits, i + BLOCK); i < end; ++i) {
+			// (BarDroidLosStatePrefetch: hints for the unit eight ahead, whose status and place are read then)
+			if (prefetch && i + 8 < end) {
+				const CUnit* ahead = activeUnits[i + 8];
+				BARDROID_PREFETCH(&ahead->losStatus[0]);
+				BARDROID_PREFETCH(&ahead->pos);
+				BARDROID_PREFETCH(&ahead->isCloaked);
+			}
+			CUnit* unit = activeUnits[i];
+			for (int at = 0; at < numAllyTeams; ++at) {
+				const unsigned short cur = unit->losStatus[at];
+				before[size_t(i) * numAllyTeams + at] = cur;
+				after[size_t(i) * numAllyTeams + at] = ((cur & LOS_ALL_MASK_BITS) == LOS_ALL_MASK_BITS) ? cur : unit->CalcLosStatus(at);
+			}
+		}
+	});
+	for (int i = 0; i < numUnits; ++i) {
+		if (prefetch && i + 16 < numUnits)
+			BARDROID_PREFETCH(&activeUnits[i + 16]->losStatus[0]);
+
+		CUnit* unit = activeUnits[i];
+		for (int at = 0; at < numAllyTeams; ++at) {
+			const size_t k = size_t(i) * numAllyTeams + at;
+			if (unit->losStatus[at] != before[k]) {
+				unit->UpdateLosStatus(at); // (changed by a call-in since: as the serial loop would)
+			} else if (after[k] != before[k]) {
+				unit->SetLosStatus(at, after[k]);
+			}
+		}
+	}
+#else
 	for (CUnit* unit: activeUnits) {
 		for (int at = 0; at < teamHandler.ActiveAllyTeams(); ++at) {
 			unit->UpdateLosStatus(at);
 		}
 	}
+#endif
 }
 
 
@@ -414,6 +465,35 @@ void CUnitHandler::UpdateUnitWeapons()
 	{
 		SCOPED_TIMER("Sim::Unit::UpdateWeaponVectors");
 
+#ifdef BARDROID_SIM
+		if (BarDroidUnits::weaponPrefetch) {
+			// BAR Droid (BarDroidWeaponPrefetch): the same UpdateWeaponVectors per unit (each touches only its own
+			// unit, weapons and pieces, as for_mt_chunk already assumed), in blocks of 64 a thread takes at once, with
+			// prefetch hints inside the block along the chain the call walks: the unit eight ahead, its weapon list
+			// and script six ahead, the weapons and the script's piece table four ahead, the weapons' pieces two ahead
+			// (the loop waited on those loads: simpleperf, late 8v8, 2026-11-07; a unit's call is short, hence the
+			// distances)
+			static constexpr int BLOCK = 64;
+			const int numUnits = activeUnits.size();
+
+			for_mt(0, (numUnits + BLOCK - 1) / BLOCK, [&](const int block) {
+				const int beg = block * BLOCK;
+				const int end = std::min(numUnits, beg + BLOCK);
+
+				for (int k = beg; k < std::min(end, beg + 8); ++k)
+					activeUnits[k]->BarDroidPrefetchWeaponsUnit();
+
+				for (int i = beg; i < end; ++i) {
+					if (i + 8 < end) activeUnits[i + 8]->BarDroidPrefetchWeaponsUnit();
+					if (i + 6 < end) activeUnits[i + 6]->BarDroidPrefetchWeaponsList();
+					if (i + 4 < end) activeUnits[i + 4]->BarDroidPrefetchWeaponsObjects();
+					if (i + 2 < end) activeUnits[i + 2]->BarDroidPrefetchWeaponsPieces();
+
+					activeUnits[i]->UpdateWeaponVectors();
+				}
+			});
+		} else
+#endif
 		for_mt_chunk(0, activeUnits.size(), [&](const int idx) {
 			auto unit = activeUnits[idx];
 			unit->UpdateWeaponVectors();
@@ -421,7 +501,19 @@ void CUnitHandler::UpdateUnitWeapons()
 	}
 	{
 		SCOPED_TIMER("Sim::Unit::Weapon");
+#ifdef BARDROID_SIM
+		// (BarDroidWeaponPrefetch: hints for the units ahead in this serial loop: their weapon lists, then the weapons'
+		// objects; activeUnits may only grow while it runs, so each ahead index is checked against its size now)
+		const bool prefetch = BarDroidUnits::weaponPrefetch;
+#endif
 		for (activeUpdateUnit = 0; activeUpdateUnit < activeUnits.size(); ++activeUpdateUnit) {
+#ifdef BARDROID_SIM
+			if (prefetch) {
+				if (activeUpdateUnit + 6 < activeUnits.size()) activeUnits[activeUpdateUnit + 6]->BarDroidPrefetchWeaponsUnit();
+				if (activeUpdateUnit + 4 < activeUnits.size()) activeUnits[activeUpdateUnit + 4]->BarDroidPrefetchWeaponsList();
+				if (activeUpdateUnit + 2 < activeUnits.size()) activeUnits[activeUpdateUnit + 2]->BarDroidPrefetchWeaponsObjects();
+			}
+#endif
 			activeUnits[activeUpdateUnit]->UpdateWeapons();
 		}
 	}
@@ -432,9 +524,24 @@ void CUnitHandler::UpdatePreFrame()
 	SCOPED_TIMER("Sim::Unit::UpdatePreFrame");
 	inUpdateCall = true;
 
+#ifdef BARDROID_SIM
+	// BAR Droid (engine branch): each unit saves only its own pieces' transforms (the draw interpolation's previous
+	// frame), so the units are spread over every worker in blocks taken as each thread comes free (the phone's little
+	// cores take fewer); the same values land in the same places as one after another. About 5% of the main thread in a
+	// late 8v8 on the dev phone (simpleperf, 2026-11-05).
+	static constexpr int BLOCK = 16;
+	const int numUnits = activeUnits.size();
+	CSolidObject::BarDroidReadPrevSkip();
+	for_mt(0, (numUnits + BLOCK - 1) / BLOCK, [this, numUnits](const int block) {
+		for (int i = block * BLOCK, end = std::min(numUnits, i + BLOCK); i < end; ++i) {
+			activeUnits[i]->UpdatePrevFrameTransform();
+		}
+	});
+#else
 	for (CUnit* unit : activeUnits) {
 		unit->UpdatePrevFrameTransform();
 	}
+#endif
 
 	inUpdateCall = false;
 }

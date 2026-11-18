@@ -196,6 +196,10 @@ private:
 	size_t alphaRangeStart = 0;
 	size_t alphaRangeCount = 0;
 	unsigned int alphaRangeDrawFrame = 0;
+#if defined(BARDROID_SIM)
+	/// BAR Droid: at most this many see-through projectiles and particles drawn a frame, the nearest (0: all)
+	size_t maxDrawnParticles = 0;
+#endif
 
 	bool drawSorted = true;
 

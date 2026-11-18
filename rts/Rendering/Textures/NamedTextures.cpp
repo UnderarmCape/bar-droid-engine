@@ -15,6 +15,12 @@
 
 #include "System/Misc/TracyDefs.h"
 
+#if defined(BARDROID_SIM)
+#include <algorithm>
+#include <cstdint>
+#include "System/Config/ConfigHandler.h"
+CONFIG(int, NamedTextureMaxSize).defaultValue(0).minimumValue(0).description("BAR Droid: picture files loaded by name (Lua's gl.Texture: loading screens, menu art) larger than this on a side are shrunk to it, keeping their shape (0: as they are; graphics memory on phones)");
+#endif
 
 
 namespace CNamedTextures {
@@ -249,6 +255,20 @@ namespace CNamedTextures {
 			texID = bitmap.CreateDDSTexture(tcp);
 		} else {
 			if (resize) bitmap = bitmap.CreateRescaled(resizeDimensions.x,resizeDimensions.y);
+#if defined(BARDROID_SIM)
+			// BAR Droid: a 3840x2160 loading picture is 33 MB on a phone's GPU, in the load's memory peak (8v8 replays on
+			// an 8 GB phone, 2026-11-04); its shape kept, so whoever draws it fills the same rectangle
+			{
+				static const int maxSide = configHandler->GetInt("NamedTextureMaxSize");
+				const int side = std::max(bitmap.xsize, bitmap.ysize);
+				if (maxSide > 0 && side > maxSide) {
+					const int w = std::max(1, static_cast<int>(static_cast<int64_t>(bitmap.xsize) * maxSide / side));
+					const int h = std::max(1, static_cast<int>(static_cast<int64_t>(bitmap.ysize) * maxSide / side));
+					LOG("[NamedTextures] BAR Droid: %s %dx%d shrunk to %dx%d", filename.c_str(), bitmap.xsize, bitmap.ysize, w, h);
+					bitmap = bitmap.CreateRescaled(w, h);
+				}
+			}
+#endif
 			if (invert) bitmap.InvertColors();
 			if (greyed) bitmap.MakeGrayScale();
 			if (tint)   bitmap.Tint(tintColor);

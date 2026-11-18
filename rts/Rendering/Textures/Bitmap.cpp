@@ -32,6 +32,104 @@
 
 #include "System/Misc/TracyDefs.h"
 
+#if defined(BARDROID_SIM) && !defined(HEADLESS)
+#include <mutex>
+#include <zlib.h>
+#include "System/Config/ConfigHandler.h"
+#include "System/UnorderedMap.hpp"
+
+// BAR Droid (engine branch): BAR's unit textures made into ASTC on the laptop (bar-droid-engine
+// tools/engine-sim/astc), loaded instead of the DDS from a folder in the write dir: Adreno and Mali read ASTC
+// themselves, at 6x6 under half the memory of DXT5. Its manifest.txt names each DDS with its size and CRC32; a file
+// the archive has differently (another BAR release) is loaded as the DDS. Drawing only; the archives are unchanged.
+CONFIG(std::string, BarDroidModelTextureDir).defaultValue("")
+	.description("BAR Droid: a folder (in the write dir) of ASTC copies of unittextures/*.dds with a manifest.txt; empty: the DDS files");
+
+namespace {
+	struct BarDroidAstcEntry { uint32_t size; uint32_t crc; std::string ktx; };
+	std::once_flag barDroidAstcOnce;
+	spring::unordered_map<std::string, BarDroidAstcEntry> barDroidAstc;
+	std::string barDroidAstcDir;
+	std::mutex barDroidAstcLogMutex;
+	int barDroidAstcUsed = 0, barDroidAstcStale = 0;
+
+	void BarDroidAstcManifest()
+	{
+		barDroidAstcDir = configHandler->GetString("BarDroidModelTextureDir");
+		if (barDroidAstcDir.empty())
+			return;
+		CFileHandler mf(barDroidAstcDir + "/manifest.txt", SPRING_VFS_RAW);
+		std::string text;
+		if (!mf.FileExists() || !mf.LoadStringData(text)) {
+			LOG_L(L_WARNING, "[BarDroid] ASTC textures: no %s/manifest.txt", barDroidAstcDir.c_str());
+			return;
+		}
+		size_t pos = 0;
+		while (pos < text.size()) {
+			size_t end = text.find('\n', pos);
+			if (end == std::string::npos)
+				end = text.size();
+			const std::string line = text.substr(pos, end - pos);
+			pos = end + 1;
+			if (line.empty() || line[0] == '#')
+				continue;
+			char path[512], ktx[512];
+			unsigned int size = 0, crc = 0;
+			if (sscanf(line.c_str(), "%511s %u %x %511s", path, &size, &crc, ktx) == 4)
+				barDroidAstc[StringToLower(path)] = { size, crc, ktx };
+		}
+		LOG("[BarDroid] ASTC textures: %u in %s", unsigned(barDroidAstc.size()), barDroidAstcDir.c_str());
+	}
+
+	bool BarDroidReadAll(const std::string& path, const std::string& modes, std::vector<uint8_t>& out)
+	{
+		CFileHandler f(path, modes);
+		if (!f.FileExists() || f.FileSize() <= 0)
+			return false;
+		if (f.IsBuffered()) {
+			out = std::move(f.GetBuffer());
+			return out.size() == size_t(f.FileSize());
+		}
+		out.resize(f.FileSize());
+		return f.Read(out.data(), f.FileSize()) == f.FileSize();
+	}
+
+	// the ASTC copy of a unit texture's DDS, if there is one for this very file
+	bool BarDroidLoadAstc(const std::string& filename, bool flipped, nv_dds::CDDSImage& image)
+	{
+		std::call_once(barDroidAstcOnce, BarDroidAstcManifest);
+		if (barDroidAstc.empty() || !flipped)
+			return false;
+		const auto it = barDroidAstc.find(StringToLower(filename));
+		if (it == barDroidAstc.end())
+			return false;
+
+		std::vector<uint8_t> dds;
+		if (!BarDroidReadAll(filename, SPRING_VFS_RAW_FIRST, dds))
+			return false;
+		const uint32_t crc = uint32_t(crc32(crc32(0L, Z_NULL, 0), dds.data(), uInt(dds.size())));
+		if (dds.size() != it->second.size || crc != it->second.crc) {
+			std::scoped_lock lck(barDroidAstcLogMutex);
+			LOG_L(L_WARNING, "[BarDroid] ASTC textures: %s is not the one converted (%u bytes, crc %08x): the DDS (%d so far)",
+				filename.c_str(), unsigned(dds.size()), crc, ++barDroidAstcStale);
+			return false;
+		}
+		std::vector<uint8_t> ktx;
+		if (!BarDroidReadAll(barDroidAstcDir + "/" + it->second.ktx, SPRING_VFS_RAW, ktx))
+			return false;
+		if (!image.load_ktx(ktx.data(), ktx.size())) {
+			LOG_L(L_WARNING, "[BarDroid] ASTC textures: %s unreadable, the DDS", it->second.ktx.c_str());
+			return false;
+		}
+		std::scoped_lock lck(barDroidAstcLogMutex);
+		if (++barDroidAstcUsed <= 3 || (barDroidAstcUsed % 25) == 0)
+			LOG("[BarDroid] ASTC textures: %s as %ux%u ASTC, %u levels (%d so far)", filename.c_str(),
+				image.get_width(), image.get_height(), image.get_num_mipmaps() + 1, barDroidAstcUsed);
+		return true;
+	}
+}
+#endif
+
 struct InitializeOpenIL {
 	InitializeOpenIL() { ilInit(); }
 	~InitializeOpenIL() { ilShutDown(); }
@@ -1249,6 +1347,9 @@ bool CBitmap::Load(std::string const& filename, float defaultAlpha, uint32_t req
 		channels = 0;
 
 		ddsimage.clear();
+	#ifdef BARDROID_SIM
+		if (!(filename.size() > 13 && StringToLower(filename.substr(0, 13)) == "unittextures/" && BarDroidLoadAstc(filename, flipDDS, ddsimage)))
+	#endif
 		if (!ddsimage.load(filename, flipDDS))
 			return false;
 
@@ -1784,7 +1885,10 @@ uint32_t CBitmap::CreateDDSTexture(const GL::TextureCreationParams& tcp) const
 			glEnable(GL_TEXTURE_2D);
 			glBindTexture(GL_TEXTURE_2D, texID);
 
-			if (!ddsimage.upload_texture2D(0, GL_TEXTURE_2D)) {
+		{
+			// (BAR Droid: ddsSkipLevels, a smaller texture from the file's own mipmaps; 0 as always)
+			const unsigned int skip = ddsSkipLevels <= ddsimage.get_num_mipmaps() ? ddsSkipLevels : 0;
+			if (!ddsimage.upload_texture2D_from(0, GL_TEXTURE_2D, skip)) {
 				glDeleteTextures(1, &texID);
 				texID = 0;
 				break;
@@ -1795,8 +1899,9 @@ uint32_t CBitmap::CreateDDSTexture(const GL::TextureCreationParams& tcp) const
 			if (tcp.aniso > 0.0f)
 				glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, tcp.aniso);
 
-			HandleDDSMipmap(GL_TEXTURE_2D, ddsimage.get_num_mipmaps(), tcp.GetMinFilter(ddsimage.get_num_mipmaps()));
+			HandleDDSMipmap(GL_TEXTURE_2D, ddsimage.get_num_mipmaps() - skip, tcp.GetMinFilter(ddsimage.get_num_mipmaps() - skip));
 			break;
+		}
 
 		case nv_dds::Texture3D:
 			glEnable(GL_TEXTURE_3D);

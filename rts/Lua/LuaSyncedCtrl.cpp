@@ -3809,6 +3809,10 @@ int LuaSyncedCtrl::SetUnitPieceParent(lua_State* L)
 	childPiece->parent->RemoveChild(childPiece);
 	childPiece->SetParent(parentPiece);
 	parentPiece->AddChild(childPiece);
+#ifdef BARDROID_SIM
+	// BAR Droid: the piece array no longer follows the tree; the unit scripts' piece walk goes by the tree again
+	unit->localModel.barDroidPreOrder = false;
+#endif
 	return 0;
 }
 

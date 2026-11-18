@@ -108,6 +108,11 @@
 
 
 
+#ifdef BARDROID_SIM
+// (GlobalRendering.cpp: the deferred present)
+void BarDroidHoldPresent(bool hold);
+void BarDroidPresent();
+#endif
 CONFIG(unsigned, SetCoreAffinity).defaultValue(0).safemodeValue(1).description("Defines a bitmask indicating which CPU cores the main-thread should use.");
 CONFIG(unsigned, TextureMemPoolSize).defaultValue(512).minimumValue(0).description("Set to 0 to disable, otherwise specify a predefined memory to serve Bitmap allocation requests");
 CONFIG(bool, UseLuaMemPools).defaultValue(true).description("Whether Lua VM memory allocations are made from pools.");
@@ -899,6 +904,15 @@ bool SpringApp::Update()
 	retc = (        activeController == nullptr || activeController->Update());
 
 	auto lock = CLoadLock::GetUniqueLock();
+	#ifdef BARDROID_SIM
+	// BAR Droid (engine branch): the frame drawn last is handed to the window now, after the simulation ran while Mesa's
+	// driver thread finished it (BarDroidDeferSwap, GlobalRendering.cpp)
+	{
+		static const bool deferSwap = configHandler->GetBool("BarDroidDeferSwap");
+		BarDroidPresent();
+		BarDroidHoldPresent(deferSwap);
+	}
+	#endif
 	swap = (retc && activeController != nullptr && activeController->Draw());
 	#endif
 

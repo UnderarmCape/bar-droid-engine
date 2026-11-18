@@ -816,8 +816,57 @@ bool CDDSImage::is_compressed() const
 		   (m_format == GL_COMPRESSED_RED_RGTC1) ||
 		   (m_format == GL_COMPRESSED_RG_RGTC2) ||
 		   (m_format == GL_COMPRESSED_RGBA_BPTC_UNORM) ||
-		   (m_format == GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM));
+		   (m_format == GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM)
+#ifdef BARDROID_SIM
+		   || (m_format >= 0x93B0 && m_format <= 0x93BD) // GL_COMPRESSED_RGBA_ASTC_4x4_KHR .. 12x12 (load_ktx)
+#endif
+		   );
 }
+
+#ifdef BARDROID_SIM
+// BAR Droid (engine branch): a KTX 1 file of ASTC levels (made on the laptop from a model's DDS, already in the
+// orientation the DDS upload has: bar-droid-engine tools/engine-sim/astc), as this image; uploaded as the DDS would be
+bool CDDSImage::load_ktx(const unsigned char* data, size_t size)
+{
+	RECOIL_DETAILED_TRACY_ZONE;
+	static const unsigned char ktxId[12] = { 0xAB, 0x4B, 0x54, 0x58, 0x20, 0x31, 0x31, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A };
+	clear();
+	if (size < 64 || memcmp(data, ktxId, sizeof(ktxId)) != 0)
+		return false;
+	uint32_t hd[13];
+	memcpy(hd, data + 12, sizeof(hd));
+	// endianness, glType, glTypeSize, glFormat, glInternalFormat, glBaseInternalFormat, width, height, depth, array
+	// elements, faces, mipmap levels, key/value bytes
+	const uint32_t fmt = hd[4], w = hd[6], h = hd[7], levels = hd[11];
+	if (hd[0] != 0x04030201 || fmt < 0x93B0 || fmt > 0x93BD || w == 0 || h == 0 || hd[8] != 0 || hd[10] != 1 || levels == 0)
+		return false;
+	size_t off = 64 + size_t(hd[12]);
+	CTexture img;
+	for (uint32_t l = 0; l < levels; l++) {
+		if (off + 4 > size)
+			return false;
+		uint32_t n = 0;
+		memcpy(&n, data + off, 4);
+		off += 4;
+		if (n == 0 || off + n > size)
+			return false;
+		const unsigned int lw = std::max(1u, w >> l), lh = std::max(1u, h >> l);
+		if (l == 0) {
+			img.create(lw, lh, 1, n, data + off);
+		} else {
+			img.add_mipmap();
+			img.get_mipmap(l - 1).create(lw, lh, 1, n, data + off);
+		}
+		off += (size_t(n) + 3) & ~size_t(3);
+	}
+	m_format = fmt;
+	m_components = 4;
+	m_type = TextureFlat;
+	m_images.push_back(std::move(img));
+	m_valid = true;
+	return true;
+}
+#endif
 
 #ifndef HEADLESS
 
@@ -945,6 +994,40 @@ bool CDDSImage::upload_texture2D(unsigned int imageIndex, int target) const
     }
 
     return true;
+}
+
+bool CDDSImage::upload_texture2D_from(unsigned int imageIndex, int target, unsigned int skipLevels) const
+{
+	RECOIL_DETAILED_TRACY_ZONE;
+	if (skipLevels == 0)
+		return upload_texture2D(imageIndex, target);
+
+	assert(m_valid);
+	assert(imageIndex < m_images.size());
+	const CTexture &image = m_images[imageIndex];
+	// (level 0 the image itself, level n its mipmap n - 1)
+	if (skipLevels > image.get_num_mipmaps())
+		return upload_texture2D(imageIndex, target);
+
+	GLint alignment = -1;
+	if (!is_compressed() && !is_dword_aligned()) {
+		glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
+		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+	}
+	for (unsigned int level = skipLevels; level <= image.get_num_mipmaps(); level++) {
+		const CSurface &surface = image.get_mipmap(level - 1);
+		const GLint glLevel = static_cast<GLint>(level - skipLevels);
+		if (is_compressed()) {
+			glCompressedTexImage2DARB(target, glLevel, m_format, surface.get_width(), surface.get_height(), 0,
+				surface.get_size(), surface);
+		} else {
+			glTexImage2D(target, glLevel, m_components, surface.get_width(), surface.get_height(), 0, m_format,
+				GL_UNSIGNED_BYTE, surface);
+		}
+	}
+	if (alignment != -1)
+		glPixelStorei(GL_UNPACK_ALIGNMENT, alignment);
+	return true;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

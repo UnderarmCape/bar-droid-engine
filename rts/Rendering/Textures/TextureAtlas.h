@@ -56,6 +56,9 @@ public:
 			atlasSizeY = ta.atlasSizeY;
 
 			reloadable = ta.reloadable;
+#if defined(BARDROID_SIM)
+			downscale = ta.downscale;
+#endif
 
 			// Trick to not call destructor on atlasAllocator multiple times
 			ta.atlasAllocator = nullptr;
@@ -64,6 +67,13 @@ public:
 	};
 	CTextureAtlas& operator= (const CTextureAtlas&) = delete;
 
+#if defined(BARDROID_SIM)
+	// BAR Droid (bardroid/sim): images loaded from files into this atlas are shrunk by this factor on each side
+	// (those of 64 pixels or more on both sides). The projectile atlases (ProjectileDrawer) take it from the setting
+	// ProjectileAtlasDownscale: on phones they were 8176x6056 and 6616x6152 RGBA, 345 MB of graphics memory, and
+	// the drivers there do not compress them. Effects only: nothing synced draws from an atlas.
+	int downscale = 1;
+#endif
 	// add a texture from a memory pointer
 	size_t AddTexFromMem(std::string name, int xsize, int ysize, TextureType texType, const void* data);
 	// add a texture from a file

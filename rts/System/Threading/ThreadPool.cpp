@@ -132,6 +132,9 @@ static int GetDefaultNumWorkers() {
 // FIXME: mutex/atomic?
 // NOTE: +1 because we also count the main thread, workers start at 1
 int GetNumThreads() { return (workerThreads[false].size() + 1); }
+#ifdef BARDROID_SIM
+int barDroidForGrain = 64;
+#endif
 int GetMaxThreads() { return std::min(MAX_THREADS, Threading::GetLogicalCpuCores()); }
 
 bool HasThreads() { return !workerThreads[false].empty(); }
@@ -306,8 +309,55 @@ void WaitForFinished(std::shared_ptr<ITaskGroup>&& taskGroup)
 
 	do {
 		const auto spinlockEnd = spring_now() + spring_time::fromMilliSecs(500);
+		#ifdef BARDROID_POOL_SLEEP
+		// BARDROID_POOL_WAIT: "spin" (stock: the clock read in a tight loop), "wfe" (the default: the core rests in ARM's
+		// wait-for-event until another core writes the group's task counter, or the kernel's 100 us event stream ticks)
+		// or "sleep" (a short spin, then asleep on the counter until the group's last task wakes this thread, 2 ms at most
+		// a time; BARDROID_POOL_SPIN_US sets the spin). Sleeping cost 29 % of the simulation's speed on the dev phone
+		// (fast-forward, 2026-11-05: a phone's thread wake-ups are slow next to dozens of waits a frame)
+		static const int waitMode = []() {
+			const char* v = getenv("BARDROID_POOL_WAIT");
+			return (v == nullptr || strcmp(v, "wfe") == 0) ? 1 : (strcmp(v, "sleep") == 0 ? 2 : 0);
+		}();
+		static const int64_t spinMicros = []() { const char* v = getenv("BARDROID_POOL_SPIN_US"); return v != nullptr ? atoll(v) : 50; }();
+		const auto sleepAfter = spring_now() + spring_time::fromMicroSecs(spinMicros);
+		#endif
 
 		while (!DoTask(tid, false) && !taskGroup->IsFinished() && !exitFlags[tid]) {
+			#if defined(BARDROID_POOL_SLEEP) && defined(__aarch64__)
+			// (after the same short spin: most waits end within it, and a WFE alone cost ~8 % of the simulation's speed)
+			if (waitMode == 1 && spring_now() >= sleepAfter) {
+				// (Linux's __cmpwait: arm the exclusive monitor on the counter, rest until it changes or an event comes)
+				int tmp;
+				asm volatile(
+					"	sevl\n"
+					"	wfe\n"
+					"	ldxr	%w[tmp], %[v]\n"
+					"	eor	%w[tmp], %w[tmp], %w[seen]\n"
+					"	cbnz	%w[tmp], 1f\n"
+					"	wfe\n"
+					"1:"
+					: [tmp] "=&r"(tmp), [v] "+Q"(*reinterpret_cast<int*>(&taskGroup->remainingTasks))
+					: [seen] "r"(taskGroup->remainingTasks.load(std::memory_order_relaxed))
+					: "memory");
+				if (spring_now() < spinlockEnd)
+					continue;
+				NotifyWorkerThreads(true, false);
+				break;
+			}
+			#endif
+			#ifdef BARDROID_POOL_SLEEP
+			if (waitMode == 2 && spring_now() >= sleepAfter && spring_now() < spinlockEnd) {
+				taskGroup->sleepers.fetch_add(1);
+				const int left = taskGroup->remainingTasks.load();
+				if (left != 0) {
+					timespec most = {0, 2000000};
+					syscall(SYS_futex, reinterpret_cast<int*>(&taskGroup->remainingTasks), FUTEX_WAIT_PRIVATE, left, &most, nullptr, 0);
+				}
+				taskGroup->sleepers.fetch_sub(1);
+				continue;
+			}
+			#endif
 			if (spring_now() < spinlockEnd)
 				continue;
 

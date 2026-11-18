@@ -20,6 +20,92 @@
 
 #include "System/Misc/TracyDefs.h"
 
+#ifdef BARDROID_SIM
+#include "Sim/MoveTypes/BarDroidMove.h"
+
+namespace {
+	// BAR Droid (BarDroidMoveQuadStamp, Sim/MoveTypes/BarDroidMove.h): an Exact query writes nothing into the objects
+	// it passes. Stock skips an object it already passed in an earlier quad of the query (one that lies in several
+	// quads) by writing the query's number into the object's mtTempNum slot first. An object's test gives the same
+	// answer in every quad, and a quad lists an object once, so the same list in the same order comes out of: test
+	// every object, and drop an accepted one that the list already holds from an earlier quad. Once the list from
+	// earlier quads is long, the query marks what it accepted so far and goes on the stock way (an object it rejected
+	// before is met unmarked, tested again and rejected again). Switch off: the stock marks from the start.
+	// (2026-11-07, first version: per-thread stamp arrays by id; the profile showed GetUnitsExact ~50 % slower, the
+	// arrays' and the ids' extra cache misses.)
+	template<typename R>
+	class BarDroidDedup {
+	public:
+		BarDroidDedup(std::vector<R*>& r, int t, int n): results(r), thread(t), tempNum(n), marking(!BarDroidMove::quadStamp) {}
+
+		void BeginQuad() {
+			earlier = results.size();
+
+			if (marking || earlier <= MAX_SCAN)
+				return;
+
+			for (R* o: results) {
+				o->mtTempNum[thread] = tempNum;
+			}
+			marking = true;
+		}
+
+		// the stock test before the object's test (marking mode only): true = already passed
+		template<typename T>
+		bool SkipBefore(T* o) {
+			if (!marking)
+				return false;
+			if (o->mtTempNum[thread] == tempNum)
+				return true;
+
+			o->mtTempNum[thread] = tempNum;
+			return false;
+		}
+
+		// after the object passed its test (no-mark mode only): true = the list holds it from an earlier quad
+		template<typename T>
+		bool DuplicateAfter(const T* o) const {
+			if (marking)
+				return false;
+
+			for (size_t j = 0; j < earlier; ++j) {
+				if (results[j] == o)
+					return true;
+			}
+
+			return false;
+		}
+
+	private:
+		static constexpr size_t MAX_SCAN = 48;
+
+		std::vector<R*>& results;
+		const int thread;
+		const int tempNum;
+		bool marking;
+		size_t earlier = 0;
+	};
+
+	// prefetch the object k places ahead in a quad's list: the lines the tests read (pos and radius are 32 bytes apart
+	// in CWorldObject, often on two lines; the solids queries test the physical and collidable state bits first)
+	template<typename T>
+	inline void BarDroidPrefetchAhead(const std::vector<T*>& objs, size_t i, bool stateBits = false)
+	{
+		static constexpr size_t AHEAD = 4;
+
+		if (!BarDroidMove::prefetch || (i + AHEAD) >= objs.size())
+			return;
+
+		const T* o = objs[i + AHEAD];
+		BarDroidMove::Prefetch(&o->pos);
+		BarDroidMove::Prefetch(&o->radius);
+
+		if (stateBits)
+			BarDroidMove::Prefetch(&o->physicalState);
+	}
+}
+#endif
+
 CR_BIND(CQuadField, )
 CR_REG_METADATA(CQuadField, (
 	CR_MEMBER(baseQuads),
@@ -641,6 +727,38 @@ void CQuadField::GetUnitsExact(QuadFieldQuery& qfq, const float3& pos, float rad
 	const int tempNum = gs->GetMtTempNum(curThread);
 	qfq.units = tempUnits[curThread].ReserveVector();
 
+#ifdef BARDROID_SIM
+	BarDroidDedup<CUnit> dedup(*qfq.units, curThread, tempNum);
+
+	for (const int qi: *qfQuery.quads) {
+		const std::vector<CUnit*>& quadUnits = baseQuads[qi].units;
+		dedup.BeginQuad();
+
+		for (size_t i = 0, n = quadUnits.size(); i < n; ++i) {
+			CUnit* u = quadUnits[i];
+			BarDroidPrefetchAhead(quadUnits, i);
+
+			if (dedup.SkipBefore(u))
+				continue;
+
+			const float totRad       = radius + u->radius;
+			const float totRadSq     = totRad * totRad;
+			const float posUnitDstSq = spherical?
+				pos.SqDistance(u->pos):
+				pos.SqDistance2D(u->pos);
+
+			if (posUnitDstSq >= totRadSq)
+				continue;
+			if (dedup.DuplicateAfter(u))
+				continue;
+
+			qfq.units->push_back(u);
+		}
+	}
+
+	return;
+#endif
+
 	for (const int qi: *qfQuery.quads) {
 		for (CUnit* u: baseQuads[qi].units) {
 			if (u->mtTempNum[curThread] == tempNum)
@@ -674,6 +792,35 @@ void CQuadField::GetUnitsExact(QuadFieldQuery& qfq, const float3& mins, const fl
 	const int tempNum = gs->GetMtTempNum(curThread);
 	qfq.units = tempUnits[curThread].ReserveVector();
 
+#ifdef BARDROID_SIM
+	BarDroidDedup<CUnit> dedup(*qfq.units, curThread, tempNum);
+
+	for (const int qi: *qfQuery.quads) {
+		const std::vector<CUnit*>& quadUnits = baseQuads[qi].units;
+		dedup.BeginQuad();
+
+		for (size_t i = 0, n = quadUnits.size(); i < n; ++i) {
+			CUnit* unit = quadUnits[i];
+			BarDroidPrefetchAhead(quadUnits, i);
+
+			if (dedup.SkipBefore(unit))
+				continue;
+
+			const float3& pos = unit->pos;
+			if (pos.x < mins.x || pos.x > maxs.x)
+				continue;
+			if (pos.z < mins.z || pos.z > maxs.z)
+				continue;
+			if (dedup.DuplicateAfter(unit))
+				continue;
+
+			qfq.units->push_back(unit);
+		}
+	}
+
+	return;
+#endif
+
 	for (const int qi: *qfQuery.quads) {
 		for (CUnit* unit: baseQuads[qi].units) {
 
@@ -705,6 +852,38 @@ void CQuadField::GetFeaturesExact(QuadFieldQuery& qfq, const float3& pos, float 
 	GetQuads(qfQuery, pos, radius);
 	const int tempNum = gs->GetMtTempNum(curThread);
 	qfq.features = tempFeatures[curThread].ReserveVector();
+
+#ifdef BARDROID_SIM
+	BarDroidDedup<CFeature> dedup(*qfq.features, curThread, tempNum);
+
+	for (const int qi: *qfQuery.quads) {
+		const std::vector<CFeature*>& quadFeatures = baseQuads[qi].features;
+		dedup.BeginQuad();
+
+		for (size_t i = 0, n = quadFeatures.size(); i < n; ++i) {
+			CFeature* f = quadFeatures[i];
+			BarDroidPrefetchAhead(quadFeatures, i);
+
+			if (dedup.SkipBefore(f))
+				continue;
+
+			const float totRad       = radius + f->radius;
+			const float totRadSq     = totRad * totRad;
+			const float posDstSq = spherical?
+				pos.SqDistance(f->pos):
+				pos.SqDistance2D(f->pos);
+
+			if (posDstSq >= totRadSq)
+				continue;
+			if (dedup.DuplicateAfter(f))
+				continue;
+
+			qfq.features->push_back(f);
+		}
+	}
+
+	return;
+#endif
 
 	for (const int qi: *qfQuery.quads) {
 		for (CFeature* f: baseQuads[qi].features) {
@@ -738,6 +917,35 @@ void CQuadField::GetFeaturesExact(QuadFieldQuery& qfq, const float3& mins, const
 	GetQuadsRectangle(qfQuery, mins, maxs);
 	const int tempNum = gs->GetMtTempNum(curThread);
 	qfq.features = tempFeatures[curThread].ReserveVector();
+
+#ifdef BARDROID_SIM
+	BarDroidDedup<CFeature> dedup(*qfq.features, curThread, tempNum);
+
+	for (const int qi: *qfQuery.quads) {
+		const std::vector<CFeature*>& quadFeatures = baseQuads[qi].features;
+		dedup.BeginQuad();
+
+		for (size_t i = 0, n = quadFeatures.size(); i < n; ++i) {
+			CFeature* feature = quadFeatures[i];
+			BarDroidPrefetchAhead(quadFeatures, i);
+
+			if (dedup.SkipBefore(feature))
+				continue;
+
+			const float3& pos = feature->pos;
+			if (pos.x < mins.x || pos.x > maxs.x)
+				continue;
+			if (pos.z < mins.z || pos.z > maxs.z)
+				continue;
+			if (dedup.DuplicateAfter(feature))
+				continue;
+
+			qfq.features->push_back(feature);
+		}
+	}
+
+	return;
+#endif
 
 	for (const int qi: *qfQuery.quads) {
 		for (CFeature* feature: baseQuads[qi].features) {
@@ -830,7 +1038,57 @@ void CQuadField::GetSolidsExact(
 	GetQuads(qfQuery, pos, radius);
 	const int tempNum = gs->GetMtTempNum(curThread);
 	qfq.solids = tempSolids[curThread].ReserveVector();
-	
+
+#ifdef BARDROID_SIM
+	BarDroidDedup<CSolidObject> dedup(*qfq.solids, curThread, tempNum);
+
+	for (const int qi: *qfQuery.quads) {
+		const std::vector<CUnit*>& quadUnits = baseQuads[qi].units;
+		const std::vector<CFeature*>& quadFeatures = baseQuads[qi].features;
+		// (one quad's units and features: a unit and a feature are never the same object)
+		dedup.BeginQuad();
+
+		for (size_t i = 0, n = quadUnits.size(); i < n; ++i) {
+			CUnit* u = quadUnits[i];
+			BarDroidPrefetchAhead(quadUnits, i, true);
+
+			if (dedup.SkipBefore(u))
+				continue;
+
+			if (!u->HasPhysicalStateBit(physicalStateBits))
+				continue;
+			if (!u->HasCollidableStateBit(collisionStateBits))
+				continue;
+			if ((pos - u->pos).SqLength() >= Square(radius + u->radius))
+				continue;
+			if (dedup.DuplicateAfter(u))
+				continue;
+
+			qfq.solids->push_back(u);
+		}
+
+		for (size_t i = 0, n = quadFeatures.size(); i < n; ++i) {
+			CFeature* f = quadFeatures[i];
+			BarDroidPrefetchAhead(quadFeatures, i, true);
+
+			if (dedup.SkipBefore(f))
+				continue;
+
+			if (!f->HasPhysicalStateBit(physicalStateBits))
+				continue;
+			if (!f->HasCollidableStateBit(collisionStateBits))
+				continue;
+			if ((pos - f->pos).SqLength() >= Square(radius + f->radius))
+				continue;
+			if (dedup.DuplicateAfter(f))
+				continue;
+
+			qfq.solids->push_back(f);
+		}
+	}
+
+	return;
+#endif
 
 	for (const int qi: *qfQuery.quads) {
 		for (CUnit* u: baseQuads[qi].units) {
@@ -868,6 +1126,53 @@ void CQuadField::GetSolidsExact(
 
 	return;
 }
+
+
+#ifdef BARDROID_SIM
+// BAR Droid (BarDroidMoveAvoid): GetSolidsExact's units only, in the same order (per quad, as there; the features it
+// leaves out came after each quad's units and change no unit's place in the list)
+void CQuadField::BarDroidGetSolidUnitsExact(
+	QuadFieldQuery& qfq,
+	const float3& pos,
+	const float radius,
+	const unsigned int physicalStateBits,
+	const unsigned int collisionStateBits
+) {
+	RECOIL_DETAILED_TRACY_ZONE;
+	auto curThread = qfq.threadOwner;
+	QuadFieldQuery qfQuery;
+	qfQuery.threadOwner = curThread;
+	GetQuads(qfQuery, pos, radius);
+	const int tempNum = gs->GetMtTempNum(curThread);
+	qfq.solids = tempSolids[curThread].ReserveVector();
+
+	BarDroidDedup<CSolidObject> dedup(*qfq.solids, curThread, tempNum);
+
+	for (const int qi: *qfQuery.quads) {
+		const std::vector<CUnit*>& quadUnits = baseQuads[qi].units;
+		dedup.BeginQuad();
+
+		for (size_t i = 0, n = quadUnits.size(); i < n; ++i) {
+			CUnit* u = quadUnits[i];
+			BarDroidPrefetchAhead(quadUnits, i, true);
+
+			if (dedup.SkipBefore(u))
+				continue;
+
+			if (!u->HasPhysicalStateBit(physicalStateBits))
+				continue;
+			if (!u->HasCollidableStateBit(collisionStateBits))
+				continue;
+			if ((pos - u->pos).SqLength() >= Square(radius + u->radius))
+				continue;
+			if (dedup.DuplicateAfter(u))
+				continue;
+
+			qfq.solids->push_back(u);
+		}
+	}
+}
+#endif
 
 
 bool CQuadField::NoSolidsExact(

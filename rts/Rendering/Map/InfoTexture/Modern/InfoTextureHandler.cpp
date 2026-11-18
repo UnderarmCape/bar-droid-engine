@@ -11,7 +11,16 @@
 #include "Radar.h"
 
 #include "System/Misc/TracyDefs.h"
+#ifdef BARDROID_SIM
+#include "Rendering/GlobalRendering.h"
+#include "System/Config/ConfigHandler.h"
+#include "System/TimeProfiler.h"
 
+// BAR Droid: the line-of-sight, air line-of-sight and radar textures (the fog of war and radar shading) uploaded every
+// Nth drawn frame instead of every one (each a full-map upload through the GPU driver: ~2 % of the dev phone's main
+// thread in a late 8v8); their edges then follow the units N-1 frames later. 1: as stock. Drawing only.
+CONFIG(int, BarDroidInfoTexEvery).defaultValue(1).minimumValue(1).maximumValue(8).description("BAR Droid: the LOS, air LOS and radar info textures updated every Nth drawn frame (1: every frame, as stock)");
+#endif
 
 
 
@@ -152,8 +161,17 @@ void CInfoTextureHandler::Update()
 	RECOIL_DETAILED_TRACY_ZONE;
 	glActiveTexture(GL_TEXTURE0);
 	glEnable(GL_TEXTURE_2D);
+#ifdef BARDROID_SIM
+	SCOPED_TIMER("Update::InfoTextures");
+	const int every = configHandler->GetInt("BarDroidInfoTexEvery");
+	const bool skipSight = !firstUpdate && every > 1 && (globalRendering->drawFrame % every) != 0;
+#endif
 
 	for (auto& [name, tex] : infoTextures) {
+#ifdef BARDROID_SIM
+		if (skipSight && (name == "los" || name == "airlos" || name == "radar"))
+			continue;
+#endif
 		// force first update except for combiner; hides visible uninitialized texmem
 		if ((firstUpdate && tex != infoTex) || tex->IsUpdateNeeded())
 			tex->Update();

@@ -44,6 +44,15 @@
 
 #include "System/Misc/TracyDefs.h"
 
+#ifdef BARDROID_SIM
+#include <new>
+#include "Sim/Misc/GroundBlockingObjectMap.h"
+#include "Sim/MoveTypes/BarDroidMove.h"
+#ifdef SYNCCHECK
+#include "System/Sync/SyncChecker.h"
+#endif
+#endif
+
 // #define PATHING_DEBUG
 
 #ifdef PATHING_DEBUG
@@ -1243,6 +1252,14 @@ bool CGroundMoveType::FollowPath(int thread)
 		event.deltaHeading = GetHeadingFromVector(modWantedDir.x, modWantedDir.z);
 		event.changed = true;
 		// setHeadingDir = GetHeadingFromVector(modWantedDir.x, modWantedDir.z);
+#ifdef BARDROID_SIM
+		// BAR Droid (BarDroidMoveParallelHeading): ChangeHeading calls the unit script only if |delta| >=
+		// minScriptChangeHeading, and |delta| <= trunc(turnRate) (GetDeltaHeading clamps to +-turnRate); a turn rate
+		// below it can never reach the script (the stock default is 32767). Any other unit makes this frame's
+		// heading changes run the stock serial way.
+		if (!(turnRate > 0.0f && turnRate < float(minScriptChangeHeading)))
+			BarDroidMove::headingNeedsSerial.store(true, std::memory_order_relaxed);
+#endif
 
 
 		#ifdef PATHING_DEBUG
@@ -1892,11 +1909,42 @@ float3 CGroundMoveType::GetObstacleAvoidanceDir(const float3& desiredDir) {
 
 	QuadFieldQuery qfQuery;
 	qfQuery.threadOwner = ThreadPool::GetThreadNum();
+#ifdef BARDROID_SIM
+	// BAR Droid (BarDroidMoveAvoid): every feature in the solids list is skipped below (no MoveDef) before anything
+	// else is done with it, so the units-only query gives the same avoidees in the same order; the dynamic_cast has no
+	// effect and is done only for the obstacles that pass the skips
+	const bool barDroidAvoid = BarDroidMove::avoid;
+
+	if (barDroidAvoid) {
+		quadField.BarDroidGetSolidUnitsExact(qfQuery, avoider->pos, avoidanceRadius, 0xFFFFFFFF, CSolidObject::CSTATE_BIT_SOLIDOBJECTS);
+	} else {
+		quadField.GetSolidsExact(qfQuery, avoider->pos, avoidanceRadius, 0xFFFFFFFF, CSolidObject::CSTATE_BIT_SOLIDOBJECTS);
+	}
+
+	// (BarDroidMovePrefetch: the same avoidees in the same order; the one two on asked for its state and direction lines)
+	const std::vector<CSolidObject*>& barDroidAvoidees = *qfQuery.solids;
+	const bool barDroidPrefetch = BarDroidMove::prefetch;
+
+	for (size_t barDroidJ = 0, barDroidN = barDroidAvoidees.size(); barDroidJ < barDroidN; ++barDroidJ) {
+		const CSolidObject* avoidee = barDroidAvoidees[barDroidJ];
+
+		if (barDroidPrefetch && (barDroidJ + 2) < barDroidN) {
+			BarDroidMove::Prefetch(&barDroidAvoidees[barDroidJ + 2]->physicalState);
+			BarDroidMove::Prefetch(&barDroidAvoidees[barDroidJ + 2]->frontdir);
+		}
+
+		const MoveDef* avoideeMD = avoidee->moveDef;
+		const UnitDef* avoideeUD = nullptr;
+
+		if (!barDroidAvoid)
+			avoideeUD = dynamic_cast<const UnitDef*>(avoidee->GetDef());
+#else
 	quadField.GetSolidsExact(qfQuery, avoider->pos, avoidanceRadius, 0xFFFFFFFF, CSolidObject::CSTATE_BIT_SOLIDOBJECTS);
 
 	for (const CSolidObject* avoidee: *qfQuery.solids) {
 		const MoveDef* avoideeMD = avoidee->moveDef;
 		const UnitDef* avoideeUD = dynamic_cast<const UnitDef*>(avoidee->GetDef());
+#endif
 
 		// cases in which there is no need to avoid this obstacle
 		if (avoidee == owner)
@@ -1911,6 +1959,11 @@ float3 CGroundMoveType::GetObstacleAvoidanceDir(const float3& desiredDir) {
 			continue;
 		if (!CMoveMath::CrushResistant(*avoiderMD, avoidee))
 			continue;
+
+#ifdef BARDROID_SIM
+		if (barDroidAvoid)
+			avoideeUD = dynamic_cast<const UnitDef*>(avoidee->GetDef());
+#endif
 
 		const bool avoideeMobile  = (avoideeMD != nullptr);
 		const bool avoideeMovable = (avoideeUD != nullptr && !static_cast<const CUnit*>(avoidee)->moveType->IsPushResistant());
@@ -2820,7 +2873,25 @@ void CGroundMoveType::HandleUnitCollisions(
 	qfQuery.threadOwner = curThread;
 	quadField.GetUnitsExact(qfQuery, collider->pos, searchRadius);
 
+#ifdef BARDROID_SIM
+	// BAR Droid (BarDroidMovePrefetch): the same collidees in the same order; the one two on asked for its lines first
+	// (state bits, transporter and move type, the (un)loading ids: far apart in CUnit)
+	const std::vector<CUnit*>& barDroidCollidees = *qfQuery.units;
+	const bool barDroidPrefetch = BarDroidMove::prefetch;
+
+	for (size_t barDroidJ = 0, barDroidN = barDroidCollidees.size(); barDroidJ < barDroidN; ++barDroidJ) {
+		CUnit* collidee = barDroidCollidees[barDroidJ];
+
+		if (barDroidPrefetch && (barDroidJ + 2) < barDroidN) {
+			const CUnit* next = barDroidCollidees[barDroidJ + 2];
+			BarDroidMove::Prefetch(&next->physicalState);
+			BarDroidMove::Prefetch(&next->transporter);
+			BarDroidMove::Prefetch(&next->loadingTransportId);
+			BarDroidMove::Prefetch(&next->unloadingTransportId);
+		}
+#else
 	for (CUnit* collidee: *qfQuery.units) {
+#endif
 		if (collidee == collider) continue;
 		if (collidee->IsSkidding()) continue;
 		if (collidee->IsFlying()) continue;
@@ -3668,6 +3739,221 @@ bool CGroundMoveType::WantReverse(const float3& wpDir, const float3& ffDir) cons
 	return (fwdETA > revETA);
 }
 
+
+
+#ifdef BARDROID_SIM
+// BAR Droid (BarDroidMovePrefetch): hints only. The ground move type of a unit in GroundMoveSystem's view lives in the
+// unit's amtMemBuffer (MoveTypeFactory), so its fields' addresses are known without reading unit->moveType.
+void CGroundMoveType::BarDroidPrefetchLines(const CUnit* u, int stage)
+{
+	using BarDroidMove::Prefetch;
+	const CGroundMoveType* gmt = std::launder(reinterpret_cast<const CGroundMoveType*>(u->amtMemBuffer));
+
+	Prefetch(&u->pos);
+	Prefetch(&u->physicalState);
+	Prefetch(&u->heading);
+	Prefetch(&u->moveType);
+	Prefetch(&u->transporter);
+	Prefetch(&u->commandAI);
+	Prefetch(gmt);
+	Prefetch(&gmt->currWayPoint);
+	Prefetch(&gmt->nextWayPoint);
+
+	switch (stage) {
+		case BARDROID_STAGE_HEADING: {
+			Prefetch(&u->frontdir);
+			Prefetch(&u->updir);
+			Prefetch(&u->upright);
+			Prefetch(&gmt->wantedHeading);
+			Prefetch(&gmt->turnRate);
+			Prefetch(&gmt->flatFrontDir);
+		} break;
+		case BARDROID_STAGE_PRECOLLISIONS: {
+			Prefetch(&u->midPos);
+			Prefetch(&gmt->resultantForces);
+			Prefetch(&gmt->currWayPoint);
+			Prefetch(&gmt->deletePathId);
+			Prefetch(&gmt->oldSpeed);
+		} break;
+		case BARDROID_STAGE_UPDATE: {
+			Prefetch(&u->midPos);
+			Prefetch(&u->aimPos);
+			Prefetch(&u->speed);
+			Prefetch(&u->requestRemoveUnloadTransportId);
+			Prefetch(&gmt->resultantForces);
+			Prefetch(&gmt->currWayPoint);
+			Prefetch(&gmt->earlyCurrWayPoint);
+			Prefetch(&gmt->oldPos);
+		} break;
+		case BARDROID_STAGE_REPLAY: {
+			Prefetch(&gmt->barDroidSyncRecord);
+			Prefetch(&gmt->barDroidMoved);
+		} break;
+		default: {
+		} break;
+	}
+}
+
+void CGroundMoveType::BarDroidUpdateRecorded()
+{
+#ifdef SYNCCHECK
+	barDroidSyncRecord.clear();
+	CSyncChecker::BarDroidSetRecorder(&barDroidSyncRecord);
+	barDroidMoved = Update();
+	CSyncChecker::BarDroidSetRecorder(nullptr);
+#else
+	barDroidMoved = Update();
+#endif
+}
+
+void CGroundMoveType::BarDroidChangeHeadingRecorded(short newHeading)
+{
+#ifdef SYNCCHECK
+	barDroidSyncRecord.clear();
+	CSyncChecker::BarDroidSetRecorder(&barDroidSyncRecord);
+	ChangeHeading(newHeading);
+	CSyncChecker::BarDroidSetRecorder(nullptr);
+#else
+	ChangeHeading(newHeading);
+#endif
+	barDroidMoved = false;
+}
+
+bool CGroundMoveType::BarDroidReplayRecorded()
+{
+#ifdef SYNCCHECK
+	CSyncChecker::BarDroidReplay(barDroidSyncRecord);
+#endif
+	return barDroidMoved;
+}
+
+void BarDroidMove::PrefetchCommandAI(const CUnit* u)
+{
+	const CCommandAI* cai = u->commandAI;
+
+	if (cai == nullptr)
+		return;
+
+	// (the std::deque's header: its start and finish iterators)
+	const char* q = reinterpret_cast<const char*>(&cai->commandQue);
+	Prefetch(q);
+	Prefetch(q + 64);
+}
+
+void BarDroidMove::PrefetchCommand(const CUnit* u)
+{
+	// (and SetNextWayPoint's two SquareIsBlocked: the waypoint squares' max height and blocking cell, which stalled it)
+	const CGroundMoveType* gmt = std::launder(reinterpret_cast<const CGroundMoveType*>(u->amtMemBuffer));
+	const float* maxHeights = readMap->GetMaxHeightMapSynced();
+
+	for (const float3& wp: {float3(gmt->GetCurrWayPoint()), float3(gmt->GetNextWayPoint())}) {
+		// (inside the map only; also keeps the float-to-int conversions defined)
+		if (!(wp.x >= 0.0f && wp.z >= 0.0f && wp.x < float3::maxxpos && wp.z < float3::maxzpos))
+			continue;
+
+		const int sx = int(wp.x / SQUARE_SIZE);
+		const int sz = int(wp.z / SQUARE_SIZE);
+
+		if (sx >= mapDims.mapx || sz >= mapDims.mapy)
+			continue;
+
+		Prefetch(&maxHeights[sz * mapDims.mapx + sx]);
+		Prefetch(groundBlockingObjectMap.BarDroidCellAddress(sz * mapDims.mapx + sx));
+	}
+
+	const CCommandAI* cai = u->commandAI;
+
+	if (cai == nullptr || cai->commandQue.empty())
+		return;
+
+	Prefetch(&cai->commandQue.front());
+}
+
+void BarDroidMove::PrefetchSpeedModCells(const CUnit* u)
+{
+	// CMoveMath::GetPosSpeedMod at the unit's square (ChangeSpeed, UpdatePos' centre-square terrain test): the type and
+	// slope maps (half resolution), the max heights and the 2D centre normals
+	const float x = u->pos.x;
+	const float z = u->pos.z;
+
+	if (!(x >= 0.0f && z >= 0.0f && x < float3::maxxpos && z < float3::maxzpos))
+		return;
+
+	const int sx = int(x / SQUARE_SIZE);
+	const int sz = int(z / SQUARE_SIZE);
+
+	if (sx >= mapDims.mapx || sz >= mapDims.mapy)
+		return;
+
+	const int sq = sx + sz * mapDims.mapx;
+	const int hsq = (sx >> 1) + (sz >> 1) * mapDims.hmapx;
+
+	Prefetch(&readMap->GetTypeMapSynced()[hsq]);
+	Prefetch(&readMap->GetSlopeMapSynced()[hsq]);
+	Prefetch(&readMap->GetMaxHeightMapSynced()[sq]);
+	Prefetch(&readMap->GetCenterNormals2DSynced()[sq]);
+}
+
+void CGroundMoveType::BarDroidPrefetchGround(const CUnit* u, int stage)
+{
+	using BarDroidMove::Prefetch;
+
+	if (stage == BARDROID_STAGE_REPLAY) {
+		// (no ground: the recorded synced writes, read by the replay)
+		const CGroundMoveType* gmt = std::launder(reinterpret_cast<const CGroundMoveType*>(u->amtMemBuffer));
+		const std::vector<unsigned char>& record = gmt->barDroidSyncRecord;
+
+		if (!record.empty()) {
+			Prefetch(record.data());
+			Prefetch(record.data() + record.size() - 1);
+		}
+		return;
+	}
+
+	// (UpdatePreCollisions reads no ground map here: OnSlope(1) returns before the slope map for every unit whose
+	// slideTolerance is under 1, BAR's; a prefetch there was a wasted page walk)
+	if (stage != BARDROID_STAGE_HEADING && stage != BARDROID_STAGE_UPDATE)
+		return;
+
+	// (clamped as the ground lookups clamp; NaN goes to 0: only an address is made from these)
+	float x = u->pos.x;
+	float z = u->pos.z;
+	x = (x >= 0.0f)? std::min(x, float3::maxxpos): 0.0f;
+	z = (z >= 0.0f)? std::min(z, float3::maxzpos): 0.0f;
+
+	switch (stage) {
+		case BARDROID_STAGE_HEADING: {
+			// CGround::GetSmoothNormal: the centre normals (sx, sz), (sx2, sz), (sx, sz2), (sx2, sz2), the second
+			// row and column on the side of the square's centre the position lies on
+			const int sx = std::clamp(int(x / SQUARE_SIZE), 1, mapDims.mapx - 2);
+			const int sz = std::clamp(int(z / SQUARE_SIZE), 1, mapDims.mapy - 2);
+			const int sx2 = (((x / SQUARE_SIZE) - sx) > 0.5f)? sx + 1: sx - 1;
+			const int sz2 = (((z / SQUARE_SIZE) - sz) > 0.5f)? sz + 1: sz - 1;
+			const int cx = std::min(sx, sx2);
+			const float3* normals = readMap->GetSharedCenterNormals(true);
+			const char* row1 = reinterpret_cast<const char*>(&normals[sz  * mapDims.mapx + cx]);
+			const char* row2 = reinterpret_cast<const char*>(&normals[sz2 * mapDims.mapx + cx]);
+
+			// (two neighbouring normals, 24 bytes: one line, or two)
+			Prefetch(row1);
+			Prefetch(row1 + 2 * sizeof(float3) - 1);
+			Prefetch(row2);
+			Prefetch(row2 + 2 * sizeof(float3) - 1);
+		} break;
+		case BARDROID_STAGE_UPDATE: {
+			// CGround::GetHeightReal (AdjustPosToWaterLine): the corner heights of the unit's square, two rows
+			const int ix = std::min(int(x / SQUARE_SIZE), mapDims.mapx - 1);
+			const int iz = std::min(int(z / SQUARE_SIZE), mapDims.mapy - 1);
+			const float* heights = readMap->GetSharedCornerHeightMap(true);
+
+			Prefetch(&heights[(iz    ) * mapDims.mapxp1 + ix]);
+			Prefetch(&heights[(iz + 1) * mapDims.mapxp1 + ix]);
+		} break;
+		default: {
+		} break;
+	}
+}
+#endif
 
 
 void CGroundMoveType::InitMemberPtrs(MemberData* memberData)

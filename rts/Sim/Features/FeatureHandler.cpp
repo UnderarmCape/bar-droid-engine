@@ -13,6 +13,11 @@
 #include "System/creg/STL_Set.h"
 #include "System/EventHandler.h"
 #include "System/TimeProfiler.h"
+#ifdef BARDROID_SIM
+#include <algorithm>
+#include <vector>
+#include "System/Threading/ThreadPool.h"
+#endif
 
 #include "System/Misc/TracyDefs.h"
 
@@ -190,9 +195,28 @@ void CFeatureHandler::UpdatePreFrame()
 {
 	SCOPED_TIMER("Sim::Features::UpdatePreFrame");
 
+#ifdef BARDROID_SIM
+	// BAR Droid (engine branch): as CUnitHandler::UpdatePreFrame, each feature saving only its own transforms, in
+	// blocks on every worker (the set copied to a list first: its order does not matter, each entry is independent)
+	static std::vector<CFeature*> list;
+	list.clear();
+	list.reserve(activeFeatureIDs.size());
+	for (auto fid : activeFeatureIDs) {
+		list.push_back(features[fid]);
+	}
+	static constexpr int BLOCK = 64;
+	const int numFeatures = list.size();
+	CSolidObject::BarDroidReadPrevSkip();
+	for_mt(0, (numFeatures + BLOCK - 1) / BLOCK, [numFeatures](const int block) {
+		for (int i = block * BLOCK, end = std::min(numFeatures, i + BLOCK); i < end; ++i) {
+			list[i]->UpdatePrevFrameTransform();
+		}
+	});
+#else
 	for (auto fid : activeFeatureIDs) {
 		features[fid]->UpdatePrevFrameTransform();
 	}
+#endif
 }
 
 void CFeatureHandler::Update()

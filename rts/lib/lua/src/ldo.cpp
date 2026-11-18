@@ -367,6 +367,9 @@ int luaD_poscall (lua_State *L, StkId firstResult) {
 ** When returns, all the results are on the stack, starting at the original
 ** function position.
 */ 
+#ifdef BARDROID_SIM
+__attribute__((hot))  /* (with luaV_run its PGO profile no longer matches: kept with the hot code, as it was) */
+#endif
 void luaD_call (lua_State *L, StkId func, int nResults) {
   if (++L->nCcalls >= LUAI_MAXCCALLS) {
     if (L->nCcalls == LUAI_MAXCCALLS)
@@ -375,7 +378,11 @@ void luaD_call (lua_State *L, StkId func, int nResults) {
       luaD_throw(L, LUA_ERRERR);  /* error while handing stack error */
   }
   if (luaD_precall(L, func, nResults) == PCRLUA)  /* is a Lua function? */
+#ifdef BARDROID_SIM
+    luaV_run(L, 1)  /* call it (BarDroidLuaVM: lvm.h) */
+#else
     luaV_execute(L, 1);  /* call it */
+#endif
   L->nCcalls--;
   luaC_checkGC(L);
 }
@@ -402,7 +409,11 @@ static void resume (lua_State *L, void *ud) {
     else  /* yielded inside a hook: just continue its execution */
       L->base = L->ci->base;
   }
+#ifdef BARDROID_SIM
+  luaV_run(L, cast_int(L->ci - L->base_ci))  /* (BarDroidLuaVM: lvm.h) */
+#else
   luaV_execute(L, cast_int(L->ci - L->base_ci));
+#endif
 }
 
 
