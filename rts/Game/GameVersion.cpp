@@ -214,7 +214,9 @@ const std::string& GetSync()
 	// compares the clients' version strings exactly; BAR's developers join online games with test builds labelled as
 	// the matching version, in good faith (Kailil, from BAR's Discord, 2026-11-04), and every change here keeps the
 	// synced results identical (replays: no desync warning). GetFull() still names this build in the logs.
-	static const std::string sync = "2026.07.04";
+	// (The release tag git describe found, "2026.09.03" from "2026.09.03-1-g... bardroid/sim-2026.09.03": it follows
+	// the branch to each new tag it is rebased on; a hand-written string stayed at the old release.)
+	static const std::string sync = std::string(SPRING_VERSION_ENGINE_MAJOR) + "." + SPRING_VERSION_ENGINE_MINOR + "." + SPRING_VERSION_ENGINE_PATCH_SET;
 #else
 	static const std::string sync = SPRING_VERSION_ENGINE;
 #endif
