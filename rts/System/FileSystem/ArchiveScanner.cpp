@@ -473,7 +473,14 @@ void CArchiveScanner::ScanDirs(const std::vector<std::string>& scanDirs)
 	std::lock_guard<decltype(scannerMutex)> lck(scannerMutex);
 	std::deque<std::string> foundArchives;
 
+#if !defined(BARDROID_SIM)
 	isDirty = true;
+#else
+	// BAR Droid: the cache is written only when this scan changes what it holds (an archive new, changed or gone,
+	// below and in ScanArchive). Rewriting it unchanged cost a phone 1.1 s at every scan (the engine's start, each
+	// lobby download answer): WriteCacheData's check of 20,000+ pool files runs to its 1 s limit under proot, where
+	// every stat stops the engine twice (dev phone and Fold7, 2026-11-18)
+#endif
 
 	// scan for all archives
 	for (const std::string& dir: scanDirs) {
@@ -518,6 +525,10 @@ void CArchiveScanner::ScanDirs(const std::vector<std::string>& scanDirs)
 			// Overwrite the info for this archive with a replaced pointer
 			ArchiveInfo& ai = GetAddArchiveInfo(lcReplaceName);
 
+		#if defined(BARDROID_SIM)
+			// (new, or a real archive's entry until now; "replaced" itself is not read back from the cache file)
+			isDirty |= (ai.origName != replaceName || !ai.path.empty());
+		#endif
 			ai.path = "";
 			ai.origName = replaceName;
 			ai.modified = 1;
@@ -526,6 +537,16 @@ void CArchiveScanner::ScanDirs(const std::vector<std::string>& scanDirs)
 			ai.replaced = lcOriginalName;
 		}
 	}
+
+#if defined(BARDROID_SIM)
+	// (a cached archive this process has not found on disk: WriteCacheData drops it, as the engine's own always did)
+	for (const ArchiveInfo& ai: archiveInfos) {
+		isDirty |= !ai.updated;
+	}
+	for (const BrokenArchive& ba: brokenArchives) {
+		isDirty |= !ba.updated;
+	}
+#endif
 }
 
 
